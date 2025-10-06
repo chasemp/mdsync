@@ -314,14 +314,14 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
             markdown_content = f.read()
         
         # Get existing page to preserve space and version
-        page = confluence.get_page_by_id(page_id, expand='version')
+        page = confluence.get_page_by_id(page_id, expand='version,space')
         
         if not page:
             print(f"Error: Page {page_id} not found", file=sys.stderr)
             sys.exit(1)
         
-        space_key = page['space']['key']
-        title = page['title']
+        space_key = page.get('space', {}).get('key', '')
+        title = page.get('title', '')
         
         # Convert markdown to Confluence storage format
         storage_content = markdown_to_confluence_storage(markdown_content)
