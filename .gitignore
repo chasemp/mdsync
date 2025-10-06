@@ -2,6 +2,10 @@
 credentials.json
 token.json
 
+# Confluence and other secrets
+secrets.yaml
+secrets.yml
+
 # Python
 __pycache__/
 *.py[cod]

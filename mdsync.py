@@ -8,6 +8,7 @@ import sys
 import re
 import argparse
 import json
+import yaml
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -159,7 +160,7 @@ def parse_confluence_destination(dest: str) -> dict:
 
 
 def get_confluence_client():
-    """Get Confluence API client from environment variables or config."""
+    """Get Confluence API client from secrets.yaml, environment variables, or config."""
     if not CONFLUENCE_AVAILABLE:
         print("Error: Confluence support not available. Install with: pip install atlassian-python-api", file=sys.stderr)
         sys.exit(1)
@@ -169,33 +170,60 @@ def get_confluence_client():
     confluence_username = os.getenv('CONFLUENCE_USERNAME')
     confluence_token = os.getenv('CONFLUENCE_API_TOKEN') or os.getenv('CONFLUENCE_TOKEN')
     
-    # Try config files
-    config_paths = [
-        Path.home() / '.config' / 'mdsync' / 'confluence.json',
-        Path.home() / '.mdsync' / 'confluence.json',
-        Path.cwd() / 'confluence.json',
+    # Try secrets.yaml first (preferred method)
+    secrets_paths = [
+        Path.cwd() / 'secrets.yaml',
+        Path.cwd() / 'secrets.yml',
+        Path.home() / '.config' / 'mdsync' / 'secrets.yaml',
+        Path.home() / '.mdsync' / 'secrets.yaml',
     ]
     
-    for config_path in config_paths:
-        if config_path.exists():
+    for secrets_path in secrets_paths:
+        if secrets_path.exists():
             try:
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                    confluence_url = confluence_url or config.get('url')
-                    confluence_username = confluence_username or config.get('username')
-                    confluence_token = confluence_token or config.get('token')
-                    break
+                with open(secrets_path, 'r') as f:
+                    secrets = yaml.safe_load(f)
+                    if secrets and 'confluence' in secrets:
+                        conf = secrets['confluence']
+                        confluence_url = confluence_url or conf.get('url')
+                        confluence_username = confluence_username or conf.get('username')
+                        confluence_token = confluence_token or conf.get('api_token') or conf.get('token')
+                        break
             except Exception:
                 pass
     
+    # Fallback to JSON config files
+    if not all([confluence_url, confluence_username, confluence_token]):
+        config_paths = [
+            Path.home() / '.config' / 'mdsync' / 'confluence.json',
+            Path.home() / '.mdsync' / 'confluence.json',
+            Path.cwd() / 'confluence.json',
+        ]
+        
+        for config_path in config_paths:
+            if config_path.exists():
+                try:
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+                        confluence_url = confluence_url or config.get('url')
+                        confluence_username = confluence_username or config.get('username')
+                        confluence_token = confluence_token or config.get('token')
+                        break
+                except Exception:
+                    pass
+    
     if not all([confluence_url, confluence_username, confluence_token]):
         print("Error: Confluence credentials not found!", file=sys.stderr)
-        print("Set environment variables:", file=sys.stderr)
+        print("\nOption 1: Create secrets.yaml in current directory:", file=sys.stderr)
+        print("  confluence:", file=sys.stderr)
+        print("    url: https://yoursite.atlassian.net", file=sys.stderr)
+        print("    username: your-email@domain.com", file=sys.stderr)
+        print("    api_token: your-api-token", file=sys.stderr)
+        print("\nOption 2: Set environment variables:", file=sys.stderr)
         print("  CONFLUENCE_URL=https://yoursite.atlassian.net", file=sys.stderr)
         print("  CONFLUENCE_USERNAME=your-email@domain.com", file=sys.stderr)
         print("  CONFLUENCE_API_TOKEN=your-api-token", file=sys.stderr)
-        print("\nOr create a config file at:", file=sys.stderr)
-        print("  ~/.config/mdsync/confluence.json", file=sys.stderr)
+        print("\nSee secrets.yaml.example for template", file=sys.stderr)
         sys.exit(1)
     
     return Confluence(

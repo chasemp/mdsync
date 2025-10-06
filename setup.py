@@ -30,6 +30,7 @@ setup(
         'markdown>=3.5.0',
         'atlassian-python-api>=3.41.0',
         'requests>=2.31.0',
+        'pyyaml>=6.0',
     ],
     entry_points={
         'console_scripts': [
