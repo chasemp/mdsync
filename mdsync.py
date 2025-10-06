@@ -106,13 +106,61 @@ def is_google_doc(path: str) -> bool:
             ('/' not in path and '.' not in path and len(path) > 20))
 
 
+def list_revisions(doc_id: str, creds):
+    """List all revisions for a Google Doc."""
+    try:
+        # Build the Drive service
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        # Get all revisions
+        revisions = drive_service.revisions().list(
+            fileId=doc_id,
+            fields='revisions(id,modifiedTime,lastModifyingUser,keepForever)',
+            pageSize=1000
+        ).execute()
+        
+        revision_list = revisions.get('revisions', [])
+        
+        if not revision_list:
+            print("No revisions found.")
+            return
+        
+        print(f"\nRevision History for Document: {doc_id}")
+        print("=" * 80)
+        
+        for rev in reversed(revision_list):  # Show newest first
+            rev_id = rev['id']
+            mod_time = rev.get('modifiedTime', 'Unknown')
+            user = rev.get('lastModifyingUser', {})
+            user_name = user.get('displayName', 'Unknown')
+            user_email = user.get('emailAddress', '')
+            kept = ' [KEPT]' if rev.get('keepForever', False) else ''
+            
+            print(f"\nRevision ID: {rev_id}{kept}")
+            print(f"  Modified: {mod_time}")
+            print(f"  By: {user_name}", end='')
+            if user_email:
+                print(f" ({user_email})", end='')
+            print()
+        
+        print("\n" + "=" * 80)
+        print(f"Total revisions: {len(revision_list)}")
+        print("\nNote: Google Drive API does not support exporting historical revisions")
+        print("in Markdown format. To view revision content, open the document in")
+        print("Google Docs and use File > Version history.")
+        
+    except HttpError as error:
+        print(f"An error occurred: {error}", file=sys.stderr)
+        sys.exit(1)
+
+
 def export_gdoc_to_markdown(doc_id: str, creds) -> str:
     """Export a Google Doc to Markdown format."""
     try:
         # Build the Drive service (used for export)
         drive_service = build('drive', 'v3', credentials=creds)
         
-        # Export the document as Markdown
+        # Export the current version as Markdown
         # Google Docs now supports text/markdown as an export format
         request = drive_service.files().export_media(
             fileId=doc_id,
@@ -131,7 +179,7 @@ def export_gdoc_to_markdown(doc_id: str, creds) -> str:
         return markdown_content
         
     except HttpError as error:
-        print(f"An error occurred: {error}")
+        print(f"An error occurred: {error}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -224,7 +272,8 @@ def main():
                '  %(prog)s input.md https://docs.google.com/document/d/DOC_ID/edit\n'
                '  %(prog)s DOC_ID output.md\n'
                '  %(prog)s input.md --create\n'
-               '  %(prog)s input.md --create -u | pbcopy',
+               '  %(prog)s input.md --create -u | pbcopy\n'
+               '  %(prog)s DOC_ID --list-revisions',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -235,6 +284,8 @@ def main():
                        help='Create a new Google Doc (use with markdown source)')
     parser.add_argument('-u', '--url-only', action='store_true',
                        help='Output only the URL (perfect for piping to pbcopy)')
+    parser.add_argument('--list-revisions', action='store_true',
+                       help='List revision history for a Google Doc')
     
     args = parser.parse_args()
     
@@ -244,6 +295,16 @@ def main():
     # Determine the sync direction
     source_is_gdoc = is_google_doc(args.source)
     
+    # Handle --list-revisions flag
+    if args.list_revisions:
+        if not source_is_gdoc:
+            print("Error: --list-revisions only works with Google Docs", file=sys.stderr)
+            sys.exit(1)
+        
+        doc_id = extract_doc_id(args.source)
+        list_revisions(doc_id, creds)
+        return
+    
     if source_is_gdoc:
         # Google Doc → Markdown
         if not args.destination:
@@ -251,6 +312,7 @@ def main():
             sys.exit(1)
         
         doc_id = extract_doc_id(args.source)
+        
         if not args.url_only:
             print(f"Exporting Google Doc {doc_id} to {args.destination}...")
         
@@ -265,6 +327,11 @@ def main():
     
     else:
         # Markdown → Google Doc
+        
+        if args.list_revisions:
+            print("Error: --list-revisions only works with Google Docs", file=sys.stderr)
+            sys.exit(1)
+        
         if args.create:
             # Create a new Google Doc
             if not args.url_only:
