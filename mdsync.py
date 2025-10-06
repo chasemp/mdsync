@@ -9,6 +9,7 @@ import re
 import argparse
 import json
 import yaml
+import difflib
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -1226,6 +1227,155 @@ def strip_frontmatter_for_gdoc(markdown_content: str) -> str:
     return markdown_content
 
 
+def show_diff(content1: str, content2: str, label1: str, label2: str):
+    """Show a unified diff between two content strings."""
+    # Normalize line endings
+    content1 = content1.replace('\r\n', '\n').replace('\r', '\n')
+    content2 = content2.replace('\r\n', '\n').replace('\r', '\n')
+    
+    # Split into lines for diff
+    lines1 = content1.splitlines(keepends=True)
+    lines2 = content2.splitlines(keepends=True)
+    
+    # Generate unified diff
+    diff = difflib.unified_diff(
+        lines1, lines2,
+        fromfile=label1,
+        tofile=label2,
+        lineterm=''
+    )
+    
+    # Print the diff
+    diff_lines = list(diff)
+    if diff_lines:
+        print("=" * 60)
+        print("DIFF (DRY RUN - No changes made):")
+        print("=" * 60)
+        for line in diff_lines:
+            print(line, end='')
+        print("=" * 60)
+    else:
+        print("No differences found - files are identical")
+
+
+def diff_markdown_to_gdoc(markdown_path: str, doc_id: str, creds):
+    """Show diff between markdown file and Google Doc (dry run)."""
+    try:
+        # Read markdown file
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            markdown_content = f.read()
+        
+        # Strip frontmatter for comparison (same as what would be synced)
+        markdown_for_gdoc = strip_frontmatter_for_gdoc(markdown_content)
+        
+        # Export Google Doc to markdown for comparison
+        gdoc_markdown = export_gdoc_to_markdown(doc_id, creds)
+        
+        # Show diff
+        show_diff(
+            gdoc_markdown, 
+            markdown_for_gdoc,
+            f"Google Doc {doc_id}",
+            f"Local file {markdown_path}"
+        )
+        
+    except FileNotFoundError:
+        print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error during diff: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def diff_gdoc_to_markdown(doc_id: str, markdown_path: str, creds):
+    """Show diff between Google Doc and markdown file (dry run)."""
+    try:
+        # Export Google Doc to markdown
+        gdoc_markdown = export_gdoc_to_markdown(doc_id, creds)
+        
+        # Read local markdown file
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            local_markdown = f.read()
+        
+        # Show diff
+        show_diff(
+            local_markdown,
+            gdoc_markdown,
+            f"Local file {markdown_path}",
+            f"Google Doc {doc_id}"
+        )
+        
+    except FileNotFoundError:
+        print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error during diff: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def diff_markdown_to_confluence(markdown_path: str, confluence_dest: str, confluence):
+    """Show diff between markdown file and Confluence page (dry run)."""
+    try:
+        # Read markdown file
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            markdown_content = f.read()
+        
+        # Strip frontmatter for comparison
+        markdown_for_confluence = strip_frontmatter_for_gdoc(markdown_content)
+        
+        # Parse Confluence destination
+        dest_info = parse_confluence_destination(confluence_dest)
+        page_id = dest_info['page_id']
+        
+        # Export Confluence page to markdown
+        confluence_markdown = export_confluence_to_markdown(page_id, confluence)
+        
+        # Show diff
+        show_diff(
+            confluence_markdown,
+            markdown_for_confluence,
+            f"Confluence page {page_id}",
+            f"Local file {markdown_path}"
+        )
+        
+    except FileNotFoundError:
+        print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error during diff: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def diff_confluence_to_markdown(confluence_dest: str, markdown_path: str, confluence):
+    """Show diff between Confluence page and markdown file (dry run)."""
+    try:
+        # Parse Confluence destination
+        dest_info = parse_confluence_destination(confluence_dest)
+        page_id = dest_info['page_id']
+        
+        # Export Confluence page to markdown
+        confluence_markdown = export_confluence_to_markdown(page_id, confluence)
+        
+        # Read local markdown file
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            local_markdown = f.read()
+        
+        # Show diff
+        show_diff(
+            local_markdown,
+            confluence_markdown,
+            f"Local file {markdown_path}",
+            f"Confluence page {page_id}"
+        )
+        
+    except FileNotFoundError:
+        print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error during diff: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def import_markdown_to_gdoc(markdown_path: str, doc_id: str, creds, quiet: bool = False):
     """Import a Markdown file to a Google Doc."""
     try:
@@ -1409,6 +1559,8 @@ def main():
     # General options
     parser.add_argument('-u', '--url-only', action='store_true',
                        help='Output only the URL (perfect for piping to pbcopy)')
+    parser.add_argument('--diff', action='store_true',
+                       help='Show diff between source and destination (markdown as common format)')
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
                        default='text', metavar='FORMAT',
                        help='Output format: text, json, or markdown (default: text)')
@@ -1422,6 +1574,43 @@ def main():
     
     dest_is_confluence = args.destination and is_confluence_page(args.destination)
     dest_is_gdoc = args.destination and is_google_doc(args.destination)
+    dest_is_markdown = args.destination and not dest_is_confluence and not dest_is_gdoc
+    
+    # Get appropriate credentials early for diff operations
+    creds = None
+    confluence = None
+    
+    if source_is_gdoc or dest_is_gdoc or args.create or args.lock or args.unlock or args.lock_status or args.list_revisions or args.list_comments or args.diff:
+        creds = get_credentials()
+    
+    if source_is_confluence or dest_is_confluence or args.create_confluence or args.diff:
+        confluence = get_confluence_client()
+    
+    # Handle diff operations (dry run) - must be before intelligent destination detection
+    if args.diff:
+        if source_is_markdown and dest_is_gdoc:
+            # Markdown → Google Doc diff
+            doc_id = extract_doc_id(args.destination)
+            diff_markdown_to_gdoc(args.source, doc_id, creds)
+        elif source_is_gdoc and dest_is_markdown:
+            # Google Doc → Markdown diff
+            doc_id = extract_doc_id(args.source)
+            diff_gdoc_to_markdown(doc_id, args.destination, creds)
+        elif source_is_markdown and dest_is_confluence:
+            # Markdown → Confluence diff
+            diff_markdown_to_confluence(args.source, args.destination, confluence)
+        elif source_is_confluence and dest_is_markdown:
+            # Confluence → Markdown diff
+            diff_confluence_to_markdown(args.source, args.destination, confluence)
+        else:
+            print("Error: --diff requires both source and destination", file=sys.stderr)
+            print("Supported diff combinations:", file=sys.stderr)
+            print("  markdown_file google_doc_url --diff", file=sys.stderr)
+            print("  google_doc_url markdown_file --diff", file=sys.stderr)
+            print("  markdown_file confluence:SPACE/PAGE_ID --diff", file=sys.stderr)
+            print("  confluence:SPACE/PAGE_ID markdown_file --diff", file=sys.stderr)
+            sys.exit(1)
+        return
     
     # Intelligent destination detection for markdown files
     if source_is_markdown and not args.destination and not args.create:
@@ -1484,15 +1673,7 @@ def main():
         except FileNotFoundError:
             pass  # File not found, continue normally
     
-    # Get appropriate credentials
-    creds = None
-    confluence = None
-    
-    if source_is_gdoc or dest_is_gdoc or args.create or args.lock or args.unlock or args.lock_status or args.list_revisions or args.list_comments:
-        creds = get_credentials()
-    
-    if source_is_confluence or dest_is_confluence or args.create_confluence:
-        confluence = get_confluence_client()
+    # Credentials already initialized above for diff operations
     
     # Handle lock/unlock operations
     if args.lock or args.unlock or args.lock_status:
