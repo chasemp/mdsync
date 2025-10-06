@@ -475,7 +475,7 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
 
 
 def extract_frontmatter_metadata(markdown_content: str) -> dict:
-    """Extract metadata from markdown frontmatter (title, labels, etc.)."""
+    """Extract metadata from markdown frontmatter (title, labels, gdoc_url, etc.)."""
     try:
         import frontmatter
         post = frontmatter.loads(markdown_content)
@@ -483,9 +483,54 @@ def extract_frontmatter_metadata(markdown_content: str) -> dict:
             'title': post.metadata.get('title'),
             'labels': post.metadata.get('labels', []),
             'parent': post.metadata.get('parent'),
+            'gdoc_url': post.metadata.get('gdoc_url'),
         }
     except Exception:
-        return {'title': None, 'labels': [], 'parent': None}
+        return {'title': None, 'labels': [], 'parent': None, 'gdoc_url': None}
+
+
+def update_frontmatter_gdoc_url(markdown_path: str, gdoc_url: str) -> bool:
+    """Update the gdoc_url in markdown frontmatter."""
+    try:
+        import frontmatter
+        
+        # Read current content
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Parse frontmatter
+        post = frontmatter.loads(content)
+        
+        # Update gdoc_url
+        post.metadata['gdoc_url'] = gdoc_url
+        
+        # Write back
+        with open(markdown_path, 'w', encoding='utf-8') as f:
+            f.write(frontmatter.dumps(post))
+        
+        return True
+    except Exception as e:
+        print(f"Warning: Could not update frontmatter in {markdown_path}: {e}", file=sys.stderr)
+        return False
+
+
+def extract_doc_id_from_url(url: str) -> str:
+    """Extract Google Doc ID from various URL formats."""
+    import re
+    
+    # Handle different Google Docs URL formats
+    patterns = [
+        r'/document/d/([a-zA-Z0-9-_]+)',  # Standard format
+        r'id=([a-zA-Z0-9-_]+)',          # Alternative format
+        r'^([a-zA-Z0-9-_]+)$'            # Just the ID
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    
+    return None
 
 
 def get_confluence_permissions_config():
@@ -1110,7 +1155,7 @@ def print_comments_markdown(doc_name: str, doc_id: str, comments: list):
         print("---\n")
 
 
-def export_gdoc_to_markdown(doc_id: str, creds) -> str:
+def export_gdoc_to_markdown(doc_id: str, creds, output_path: str = None) -> str:
     """Export a Google Doc to Markdown format."""
     try:
         # Build the Drive service (used for export)
@@ -1132,7 +1177,33 @@ def export_gdoc_to_markdown(doc_id: str, creds) -> str:
         
         # Get the content as string
         markdown_content = file_stream.getvalue().decode('utf-8')
-        return markdown_content
+        
+        # If output path provided, add frontmatter with gdoc_url
+        if output_path:
+            gdoc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+            
+            # Check if content already has frontmatter
+            if markdown_content.startswith('---'):
+                # Parse existing frontmatter and add gdoc_url
+                try:
+                    import frontmatter
+                    post = frontmatter.loads(markdown_content)
+                    post.metadata['gdoc_url'] = gdoc_url
+                    frontmatter_content = frontmatter.dumps(post)
+                except Exception:
+                    # Fallback: prepend frontmatter
+                    frontmatter_content = f"---\ngdoc_url: {gdoc_url}\n---\n\n{markdown_content}"
+            else:
+                # Add frontmatter to the content
+                frontmatter_content = f"---\ngdoc_url: {gdoc_url}\n---\n\n{markdown_content}"
+            
+            # Write to file
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(frontmatter_content)
+            
+            return frontmatter_content
+        else:
+            return markdown_content
         
     except HttpError as error:
         print(f"An error occurred: {error}", file=sys.stderr)
@@ -1208,10 +1279,15 @@ def create_new_gdoc_from_markdown(markdown_path: str, creds, quiet: bool = False
         ).execute()
         
         doc_id = file.get('id')
+        gdoc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+        
+        # Update frontmatter with the Google Doc URL
+        update_frontmatter_gdoc_url(markdown_path, gdoc_url)
         
         if not quiet:
             print(f"Created new Google Doc with ID: {doc_id}")
-            print(f"URL: https://docs.google.com/document/d/{doc_id}/edit")
+            print(f"URL: {gdoc_url}")
+            print(f"Updated frontmatter in {markdown_path}")
         
         return doc_id
         
@@ -1298,6 +1374,67 @@ def main():
     
     dest_is_confluence = args.destination and is_confluence_page(args.destination)
     dest_is_gdoc = args.destination and is_google_doc(args.destination)
+    
+    # Intelligent destination detection for markdown files
+    if source_is_markdown and not args.destination and not args.create:
+        # Check if markdown has frontmatter with gdoc_url
+        try:
+            with open(args.source, 'r', encoding='utf-8') as f:
+                markdown_content = f.read()
+            
+            frontmatter = extract_frontmatter_metadata(markdown_content)
+            gdoc_url = frontmatter.get('gdoc_url')
+            
+            if gdoc_url:
+                # Extract doc ID from URL
+                doc_id = extract_doc_id_from_url(gdoc_url)
+                if doc_id:
+                    print(f"Found gdoc_url in frontmatter: {gdoc_url}")
+                    print(f"Auto-syncing to Google Doc {doc_id}")
+                    # Set destination to the Google Doc
+                    args.destination = f"https://docs.google.com/document/d/{doc_id}/edit"
+                    dest_is_gdoc = True
+                else:
+                    print("Error: Invalid gdoc_url in frontmatter", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                print("Error: No destination specified and no gdoc_url in frontmatter", file=sys.stderr)
+                print("Use: mdsync file.md <destination> or add gdoc_url to frontmatter", file=sys.stderr)
+                sys.exit(1)
+        except FileNotFoundError:
+            print(f"Error: Markdown file not found: {args.source}", file=sys.stderr)
+            sys.exit(1)
+    
+    # Check for destination mismatch warnings
+    if source_is_markdown and dest_is_gdoc and args.destination:
+        try:
+            with open(args.source, 'r', encoding='utf-8') as f:
+                markdown_content = f.read()
+            
+            frontmatter = extract_frontmatter_metadata(markdown_content)
+            frontmatter_gdoc_url = frontmatter.get('gdoc_url')
+            
+            if frontmatter_gdoc_url:
+                frontmatter_doc_id = extract_doc_id_from_url(frontmatter_gdoc_url)
+                dest_doc_id = extract_doc_id(args.destination)
+                
+                if frontmatter_doc_id and dest_doc_id and frontmatter_doc_id != dest_doc_id:
+                    print(f"⚠️  WARNING: Destination mismatch!", file=sys.stderr)
+                    print(f"   Frontmatter gdoc_url: {frontmatter_gdoc_url}", file=sys.stderr)
+                    print(f"   Command destination:  {args.destination}", file=sys.stderr)
+                    print(f"   This will sync to a different Google Doc than expected.", file=sys.stderr)
+                    print(f"   Continue? (y/N): ", end='', file=sys.stderr)
+                    
+                    try:
+                        response = input().strip().lower()
+                        if response not in ['y', 'yes']:
+                            print("Cancelled.", file=sys.stderr)
+                            sys.exit(0)
+                    except KeyboardInterrupt:
+                        print("\nCancelled.", file=sys.stderr)
+                        sys.exit(0)
+        except FileNotFoundError:
+            pass  # File not found, continue normally
     
     # Get appropriate credentials
     creds = None
@@ -1441,14 +1578,12 @@ def main():
         if not args.url_only:
             print(f"Exporting Google Doc {doc_id} to {args.destination}...")
         
-        markdown_content = export_gdoc_to_markdown(doc_id, creds)
-        
-        # Write to file
-        with open(args.destination, 'w', encoding='utf-8') as f:
-            f.write(markdown_content)
+        # Export with frontmatter
+        markdown_content = export_gdoc_to_markdown(doc_id, creds, args.destination)
         
         if not args.url_only:
             print(f"Successfully exported to {args.destination}")
+            print(f"Added gdoc_url to frontmatter")
         return
     
     # Handle Markdown → Confluence
