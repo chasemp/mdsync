@@ -235,41 +235,77 @@ def get_confluence_client():
 
 
 def markdown_to_confluence_storage(markdown_content: str) -> str:
-    """Convert markdown to Confluence storage format.
+    """Convert markdown to Confluence storage format using proper HTML conversion.
     
-    This is a basic conversion. For more advanced conversion,
-    consider using a library like mistune or markdown2confluence.
+    Uses the markdown library with extensions for better formatting support,
+    similar to the md2confluence project approach.
     """
-    # Basic conversions for common markdown patterns
-    content = markdown_content
+    import markdown
     
-    # Headers
-    content = re.sub(r'^# (.+)$', r'<h1>\1</h1>', content, flags=re.MULTILINE)
-    content = re.sub(r'^## (.+)$', r'<h2>\1</h2>', content, flags=re.MULTILINE)
-    content = re.sub(r'^### (.+)$', r'<h3>\1</h3>', content, flags=re.MULTILINE)
-    content = re.sub(r'^#### (.+)$', r'<h4>\1</h4>', content, flags=re.MULTILINE)
+    # Convert markdown to HTML with extensions (similar to md2confluence)
+    html_content = markdown.markdown(
+        markdown_content,
+        extensions=[
+            'tables',          # Support for tables
+            'fenced_code',     # Support for ```code blocks```
+            'codehilite',      # Syntax highlighting
+            'nl2br',           # Convert newlines to <br>
+            'sane_lists'       # Better list handling
+        ]
+    )
     
-    # Bold and italic
-    content = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', content)
-    content = re.sub(r'\*(.+?)\*', r'<em>\1</em>', content)
-    content = re.sub(r'__(.+?)__', r'<strong>\1</strong>', content)
-    content = re.sub(r'_(.+?)_', r'<em>\1</em>', content)
+    # Convert to Confluence Storage Format
+    confluence_content = html_content
     
-    # Inline code
-    content = re.sub(r'`(.+?)`', r'<code>\1</code>', content)
+    # Remove problematic id attributes from headings
+    confluence_content = re.sub(
+        r'<h([1-6]) id="[^"]*">',
+        r'<h\1>',
+        confluence_content
+    )
     
-    # Links
-    content = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2">\1</a>', content)
+    # Convert code blocks to simpler format (remove codehilite divs)
+    confluence_content = re.sub(
+        r'<div class="codehilite"><pre><span></span><code[^>]*>(.*?)</code></pre></div>',
+        r'<pre><code>\1</code></pre>',
+        confluence_content,
+        flags=re.DOTALL
+    )
     
-    # Line breaks
-    content = content.replace('\n\n', '<br/><br/>')
+    # Remove syntax highlighting spans from code blocks
+    confluence_content = re.sub(
+        r'<span class="[^"]*">([^<]*)</span>',
+        r'\1',
+        confluence_content
+    )
     
-    return content
+    # Convert links - distinguish between internal pages and external URLs
+    def convert_link(match):
+        href = match.group(1)
+        text = match.group(2)
+        
+        # External URL (starts with http/https)
+        if href.startswith(('http://', 'https://', 'mailto:')):
+            return f'<a href="{href}">{text}</a>'
+        # Internal page link - convert to Confluence format
+        else:
+            return f'<ac:link><ri:page ri:content-title="{href}"/><ac:link-body>{text}</ac:link-body></ac:link>'
+    
+    confluence_content = re.sub(
+        r'<a href="([^"]+)">(.*?)</a>',
+        convert_link,
+        confluence_content
+    )
+    
+    return confluence_content
 
 
 def export_confluence_to_markdown(page_id: str, confluence) -> str:
-    """Export a Confluence page to Markdown format."""
+    """Export a Confluence page to Markdown format using html2text for better conversion."""
     try:
+        import html2text
+        from bs4 import BeautifulSoup
+        
         # Get page content
         page = confluence.get_page_by_id(page_id, expand='body.storage')
         
@@ -280,24 +316,36 @@ def export_confluence_to_markdown(page_id: str, confluence) -> str:
         # Get the storage format content
         storage_content = page['body']['storage']['value']
         
-        # Basic HTML to Markdown conversion
-        # For production, consider using html2text or similar
-        markdown_content = storage_content
+        # Pre-process Confluence-specific tags before conversion
+        soup = BeautifulSoup(storage_content, 'html.parser')
         
-        # Remove HTML tags (basic conversion)
-        markdown_content = re.sub(r'<h1>(.+?)</h1>', r'# \1\n', markdown_content)
-        markdown_content = re.sub(r'<h2>(.+?)</h2>', r'## \1\n', markdown_content)
-        markdown_content = re.sub(r'<h3>(.+?)</h3>', r'### \1\n', markdown_content)
-        markdown_content = re.sub(r'<h4>(.+?)</h4>', r'#### \1\n', markdown_content)
-        markdown_content = re.sub(r'<strong>(.+?)</strong>', r'**\1**', markdown_content)
-        markdown_content = re.sub(r'<em>(.+?)</em>', r'*\1*', markdown_content)
-        markdown_content = re.sub(r'<code>(.+?)</code>', r'`\1`', markdown_content)
-        markdown_content = re.sub(r'<a href="([^"]+)">(.+?)</a>', r'[\2](\1)', markdown_content)
-        markdown_content = re.sub(r'<br\s*/?>', '\n', markdown_content)
-        markdown_content = re.sub(r'<p>(.+?)</p>', r'\1\n\n', markdown_content)
+        # Convert Confluence internal links to regular HTML links
+        for link in soup.find_all('ac:link'):
+            page_ref = link.find('ri:page')
+            if page_ref and page_ref.get('ri:content-title'):
+                page_title = page_ref.get('ri:content-title')
+                link_body = link.find('ac:link-body')
+                link_text = link_body.get_text() if link_body else page_title
+                # Create a simple markdown-style link
+                new_link = soup.new_tag('a', href=page_title)
+                new_link.string = link_text
+                link.replace_with(new_link)
         
-        # Remove remaining HTML tags
-        markdown_content = re.sub(r'<[^>]+>', '', markdown_content)
+        # Convert back to HTML string
+        cleaned_html = str(soup)
+        
+        # Use html2text for proper HTML to Markdown conversion
+        h = html2text.HTML2Text()
+        h.body_width = 0  # Don't wrap lines
+        h.ignore_links = False
+        h.ignore_images = False
+        h.ignore_emphasis = False
+        h.skip_internal_links = False
+        h.inline_links = True
+        h.protect_links = True
+        h.unicode_snob = True  # Use unicode instead of HTML entities
+        
+        markdown_content = h.handle(cleaned_html)
         
         return markdown_content.strip()
         

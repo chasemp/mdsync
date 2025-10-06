@@ -31,6 +31,8 @@ setup(
         'atlassian-python-api>=3.41.0',
         'requests>=2.31.0',
         'pyyaml>=6.0',
+        'beautifulsoup4>=4.12.0',
+        'html2text>=2020.1.16',
     ],
     entry_points={
         'console_scripts': [
