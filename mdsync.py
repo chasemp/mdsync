@@ -360,7 +360,7 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
     return confluence_content
 
 
-def export_confluence_to_markdown(page_id: str, confluence) -> str:
+def export_confluence_to_markdown(page_id: str, confluence, output_path: str = None) -> str:
     """Export a Confluence page to Markdown format using html2text for better conversion."""
     try:
         import html2text
@@ -407,7 +407,33 @@ def export_confluence_to_markdown(page_id: str, confluence) -> str:
         
         markdown_content = h.handle(cleaned_html)
         
-        return markdown_content.strip()
+        # If output path provided, add frontmatter with confluence_url
+        if output_path:
+            space_key = page.get('space', {}).get('key', '')
+            confluence_url = f"{confluence.url.rstrip('/')}/wiki/spaces/{space_key}/pages/{page_id}"
+            
+            # Check if content already has frontmatter
+            if markdown_content.startswith('---'):
+                # Parse existing frontmatter and add confluence_url
+                try:
+                    import frontmatter
+                    post = frontmatter.loads(markdown_content)
+                    post.metadata['confluence_url'] = confluence_url
+                    frontmatter_content = frontmatter.dumps(post)
+                except Exception:
+                    # Fallback: prepend frontmatter
+                    frontmatter_content = f"---\nconfluence_url: {confluence_url}\n---\n\n{markdown_content}"
+            else:
+                # Add frontmatter to the content
+                frontmatter_content = f"---\nconfluence_url: {confluence_url}\n---\n\n{markdown_content}"
+            
+            # Write to file
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(frontmatter_content)
+            
+            return frontmatter_content
+        else:
+            return markdown_content.strip()
         
     except Exception as error:
         print(f"An error occurred: {error}", file=sys.stderr)
@@ -435,6 +461,9 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
         space_key = page.get('space', {}).get('key', '')
         title = page.get('title', '')
         
+        # Generate Confluence URL
+        confluence_url = f"{confluence.url.rstrip('/')}/wiki/spaces/{space_key}/pages/{page_id}"
+        
         # Convert markdown to Confluence storage format
         storage_content = markdown_to_confluence_storage(markdown_content)
         
@@ -447,6 +476,9 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
             type='page',
             representation='storage'
         )
+        
+        # Update frontmatter with Confluence URL
+        update_frontmatter_confluence_url(markdown_path, confluence_url)
         
         # Set labels authoritatively if any in frontmatter
         if frontmatter_labels:
@@ -464,8 +496,10 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
             print(f"✓ Successfully updated Confluence page: {title}")
             print(f"  Page ID: {page_id}")
             print(f"  Space: {space_key}")
+            print(f"  URL: {confluence_url}")
             if frontmatter_labels:
                 print(f"  Labels: {', '.join(frontmatter_labels)}")
+            print(f"  Updated frontmatter in {markdown_path}")
         
     except FileNotFoundError:
         print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
@@ -476,7 +510,7 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
 
 
 def extract_frontmatter_metadata(markdown_content: str) -> dict:
-    """Extract metadata from markdown frontmatter (title, labels, gdoc_url, etc.)."""
+    """Extract metadata from markdown frontmatter (title, labels, gdoc_url, confluence_url, etc.)."""
     try:
         import frontmatter
         post = frontmatter.loads(markdown_content)
@@ -485,9 +519,10 @@ def extract_frontmatter_metadata(markdown_content: str) -> dict:
             'labels': post.metadata.get('labels', []),
             'parent': post.metadata.get('parent'),
             'gdoc_url': post.metadata.get('gdoc_url'),
+            'confluence_url': post.metadata.get('confluence_url'),
         }
     except Exception:
-        return {'title': None, 'labels': [], 'parent': None, 'gdoc_url': None}
+        return {'title': None, 'labels': [], 'parent': None, 'gdoc_url': None, 'confluence_url': None}
 
 
 def update_frontmatter_gdoc_url(markdown_path: str, gdoc_url: str) -> bool:
@@ -504,6 +539,31 @@ def update_frontmatter_gdoc_url(markdown_path: str, gdoc_url: str) -> bool:
         
         # Update gdoc_url
         post.metadata['gdoc_url'] = gdoc_url
+        
+        # Write back
+        with open(markdown_path, 'w', encoding='utf-8') as f:
+            f.write(frontmatter.dumps(post))
+        
+        return True
+    except Exception as e:
+        print(f"Warning: Could not update frontmatter in {markdown_path}: {e}", file=sys.stderr)
+        return False
+
+
+def update_frontmatter_confluence_url(markdown_path: str, confluence_url: str) -> bool:
+    """Update the confluence_url in markdown frontmatter."""
+    try:
+        import frontmatter
+        
+        # Read current content
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Parse frontmatter
+        post = frontmatter.loads(content)
+        
+        # Update confluence_url
+        post.metadata['confluence_url'] = confluence_url
         
         # Write back
         with open(markdown_path, 'w', encoding='utf-8') as f:
@@ -830,6 +890,12 @@ def create_confluence_page(markdown_path: str, confluence, space: str, title: st
         
         page_id = new_page['id']
         
+        # Generate Confluence URL
+        confluence_url = f"{confluence.url.rstrip('/')}/wiki/spaces/{space}/pages/{page_id}"
+        
+        # Update frontmatter with Confluence URL
+        update_frontmatter_confluence_url(markdown_path, confluence_url)
+        
         # Set labels authoritatively if any
         if all_labels:
             # Get Confluence credentials for label setting
@@ -847,10 +913,12 @@ def create_confluence_page(markdown_path: str, confluence, space: str, title: st
             print(f"✓ Created new Confluence page: {title}")
             print(f"  Page ID: {page_id}")
             print(f"  Space: {space}")
+            print(f"  URL: {confluence_url}")
             if parent_id:
                 print(f"  Parent ID: {parent_id}")
             if all_labels:
                 print(f"  Labels: {', '.join(all_labels)}")
+            print(f"  Updated frontmatter in {markdown_path}")
         
         return page_id
         
@@ -1494,6 +1562,98 @@ def create_new_gdoc_from_markdown(markdown_path: str, creds, quiet: bool = False
         sys.exit(1)
 
 
+def list_markdown_files(path: str, output_format: str = 'text'):
+    """List frontmatter information for markdown files."""
+    import glob
+    import json
+    
+    # Determine if path is file or directory
+    if os.path.isfile(path):
+        if not path.endswith('.md'):
+            print(f"Error: {path} is not a markdown file", file=sys.stderr)
+            sys.exit(1)
+        files = [path]
+    elif os.path.isdir(path):
+        # Find all markdown files in directory
+        pattern = os.path.join(path, '**', '*.md')
+        files = glob.glob(pattern, recursive=True)
+        if not files:
+            print(f"No markdown files found in {path}")
+            return
+    else:
+        print(f"Error: {path} is not a valid file or directory", file=sys.stderr)
+        sys.exit(1)
+    
+    results = []
+    
+    for file_path in files:
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Extract frontmatter metadata
+            metadata = extract_frontmatter_metadata(content)
+            
+            # Determine export locations
+            export_locations = []
+            if metadata.get('gdoc_url'):
+                export_locations.append({
+                    'type': 'Google Doc',
+                    'url': metadata['gdoc_url']
+                })
+            
+            if metadata.get('confluence_url'):
+                export_locations.append({
+                    'type': 'Confluence',
+                    'url': metadata['confluence_url']
+                })
+            
+            file_info = {
+                'file': file_path,
+                'title': metadata.get('title'),
+                'labels': metadata.get('labels', []),
+                'export_locations': export_locations
+            }
+            
+            results.append(file_info)
+            
+        except Exception as e:
+            print(f"Error reading {file_path}: {e}", file=sys.stderr)
+            continue
+    
+    # Display results
+    if output_format == 'json':
+        print(json.dumps(results, indent=2))
+    else:
+        display_frontmatter_info(results)
+
+
+def display_frontmatter_info(results):
+    """Display frontmatter information in a readable format."""
+    if not results:
+        print("No markdown files with frontmatter found")
+        return
+    
+    print(f"Found {len(results)} markdown file(s) with frontmatter:")
+    print("=" * 80)
+    
+    for info in results:
+        print(f"\n📄 {info['file']}")
+        
+        if info['title']:
+            print(f"   Title: {info['title']}")
+        
+        if info['labels']:
+            print(f"   Labels: {', '.join(info['labels'])}")
+        
+        if info['export_locations']:
+            print("   Export Locations:")
+            for location in info['export_locations']:
+                print(f"     • {location['type']}: {location['url']}")
+        else:
+            print("   Export Locations: None")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Sync between Google Docs, Confluence, and Markdown files',
@@ -1510,11 +1670,24 @@ def main():
                '  %(prog)s input.md confluence:SPACE/123456\n'
                '  %(prog)s input.md --create-confluence --space ENG --title "My Page"\n'
                '  %(prog)s confluence:SPACE/123456 output.md\n'
-               '  %(prog)s https://site.atlassian.net/wiki/spaces/ENG/pages/123456 output.md',
+               '  %(prog)s https://site.atlassian.net/wiki/spaces/ENG/pages/123456 output.md\n\n'
+               '  # List frontmatter\n'
+               '  %(prog)s list [file_or_directory]',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
-    parser.add_argument('source', help='Source: Google Doc URL/ID, Confluence page, or Markdown file')
+    # Add subcommands
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # List command
+    list_parser = subparsers.add_parser('list', help='List frontmatter information for markdown files')
+    list_parser.add_argument('path', nargs='?', default='.', 
+                           help='File or directory to scan (default: current directory)')
+    list_parser.add_argument('--format', type=str, choices=['text', 'json'], default='text',
+                           help='Output format: text or json (default: text)')
+    
+    # Main sync arguments
+    parser.add_argument('source', nargs='?', help='Source: Google Doc URL/ID, Confluence page, or Markdown file')
     parser.add_argument('destination', nargs='?', 
                        help='Destination: Google Doc URL/ID, Confluence page, or Markdown file')
     
@@ -1566,6 +1739,11 @@ def main():
                        help='Output format: text, json, or markdown (default: text)')
     
     args = parser.parse_args()
+    
+    # Handle list command
+    if args.command == 'list':
+        list_markdown_files(args.path, args.format)
+        return
     
     # Determine source and destination types
     source_is_gdoc = is_google_doc(args.source)
@@ -1786,14 +1964,12 @@ def main():
         if not args.url_only:
             print(f"Exporting Confluence page {page_id} to {args.destination}...")
         
-        markdown_content = export_confluence_to_markdown(page_id, confluence)
-        
-        # Write to file
-        with open(args.destination, 'w', encoding='utf-8') as f:
-            f.write(markdown_content)
+        # Export with frontmatter
+        markdown_content = export_confluence_to_markdown(page_id, confluence, args.destination)
         
         if not args.url_only:
             print(f"Successfully exported to {args.destination}")
+            print(f"Added confluence_url to frontmatter")
         return
     
     # Handle Google Doc → Markdown
