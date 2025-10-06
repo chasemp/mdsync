@@ -154,6 +154,118 @@ def list_revisions(doc_id: str, creds):
         sys.exit(1)
 
 
+def lock_document(doc_id: str, creds, reason: str = "Document locked via mdsync"):
+    """Lock a Google Doc to prevent editing."""
+    try:
+        # Build the Drive service
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        # Set content restrictions to lock the file
+        file_metadata = {
+            'contentRestrictions': [{
+                'readOnly': True,
+                'reason': reason
+            }]
+        }
+        
+        updated_file = drive_service.files().update(
+            fileId=doc_id,
+            body=file_metadata,
+            fields='contentRestrictions'
+        ).execute()
+        
+        print(f"✓ Document locked: {doc_id}")
+        print(f"  Reason: {reason}")
+        print(f"  URL: https://docs.google.com/document/d/{doc_id}/edit")
+        
+    except HttpError as error:
+        print(f"An error occurred: {error}", file=sys.stderr)
+        if error.resp.status == 403:
+            print("Note: You need editor access to lock/unlock documents.", file=sys.stderr)
+        sys.exit(1)
+
+
+def unlock_document(doc_id: str, creds):
+    """Unlock a Google Doc to allow editing."""
+    try:
+        # Build the Drive service
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        # Remove content restrictions to unlock the file
+        file_metadata = {
+            'contentRestrictions': [{
+                'readOnly': False
+            }]
+        }
+        
+        updated_file = drive_service.files().update(
+            fileId=doc_id,
+            body=file_metadata,
+            fields='contentRestrictions'
+        ).execute()
+        
+        print(f"✓ Document unlocked: {doc_id}")
+        print(f"  URL: https://docs.google.com/document/d/{doc_id}/edit")
+        
+    except HttpError as error:
+        print(f"An error occurred: {error}", file=sys.stderr)
+        if error.resp.status == 403:
+            print("Note: You need editor access to lock/unlock documents.", file=sys.stderr)
+        sys.exit(1)
+
+
+def check_lock_status(doc_id: str, creds):
+    """Check if a Google Doc is locked."""
+    try:
+        # Build the Drive service
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        # Get file metadata including content restrictions
+        file = drive_service.files().get(
+            fileId=doc_id,
+            fields='name,contentRestrictions,owners,modifiedTime'
+        ).execute()
+        
+        doc_name = file.get('name', 'Unknown')
+        content_restrictions = file.get('contentRestrictions', [])
+        owners = file.get('owners', [])
+        modified_time = file.get('modifiedTime', 'Unknown')
+        
+        print(f"\nDocument: {doc_name}")
+        print(f"ID: {doc_id}")
+        print(f"URL: https://docs.google.com/document/d/{doc_id}/edit")
+        print(f"Last Modified: {modified_time}")
+        
+        if owners:
+            owner_names = ', '.join([o.get('displayName', 'Unknown') for o in owners])
+            print(f"Owner(s): {owner_names}")
+        
+        print("\n" + "=" * 60)
+        
+        if content_restrictions:
+            for restriction in content_restrictions:
+                if restriction.get('readOnly', False):
+                    print("🔒 Status: LOCKED")
+                    reason = restriction.get('reason', 'No reason provided')
+                    print(f"   Reason: {reason}")
+                    restricting_user = restriction.get('restrictingUser', {})
+                    if restricting_user:
+                        print(f"   Locked by: {restricting_user.get('displayName', 'Unknown')}")
+                    restrict_time = restriction.get('restrictionTime', '')
+                    if restrict_time:
+                        print(f"   Locked at: {restrict_time}")
+                else:
+                    print("🔓 Status: UNLOCKED")
+        else:
+            print("🔓 Status: UNLOCKED")
+        
+        print("=" * 60)
+        
+    except HttpError as error:
+        print(f"An error occurred: {error}", file=sys.stderr)
+        sys.exit(1)
+
+
 def export_gdoc_to_markdown(doc_id: str, creds) -> str:
     """Export a Google Doc to Markdown format."""
     try:
@@ -273,7 +385,10 @@ def main():
                '  %(prog)s DOC_ID output.md\n'
                '  %(prog)s input.md --create\n'
                '  %(prog)s input.md --create -u | pbcopy\n'
-               '  %(prog)s DOC_ID --list-revisions',
+               '  %(prog)s DOC_ID --list-revisions\n'
+               '  %(prog)s DOC_ID --lock\n'
+               '  %(prog)s DOC_ID --unlock\n'
+               '  %(prog)s DOC_ID --lock-status',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -286,6 +401,14 @@ def main():
                        help='Output only the URL (perfect for piping to pbcopy)')
     parser.add_argument('--list-revisions', action='store_true',
                        help='List revision history for a Google Doc')
+    parser.add_argument('--lock', action='store_true',
+                       help='Lock a Google Doc to prevent editing')
+    parser.add_argument('--unlock', action='store_true',
+                       help='Unlock a Google Doc to allow editing')
+    parser.add_argument('--lock-status', action='store_true',
+                       help='Check if a Google Doc is locked')
+    parser.add_argument('--lock-reason', type=str, metavar='REASON',
+                       help='Reason for locking (use with --lock)')
     
     args = parser.parse_args()
     
@@ -294,6 +417,24 @@ def main():
     
     # Determine the sync direction
     source_is_gdoc = is_google_doc(args.source)
+    
+    # Handle lock/unlock operations
+    if args.lock or args.unlock or args.lock_status:
+        if not source_is_gdoc:
+            print("Error: Lock operations only work with Google Docs", file=sys.stderr)
+            sys.exit(1)
+        
+        doc_id = extract_doc_id(args.source)
+        
+        if args.lock:
+            reason = args.lock_reason or "Document locked via mdsync"
+            lock_document(doc_id, creds, reason)
+        elif args.unlock:
+            unlock_document(doc_id, creds)
+        elif args.lock_status:
+            check_lock_status(doc_id, creds)
+        
+        return
     
     # Handle --list-revisions flag
     if args.list_revisions:
