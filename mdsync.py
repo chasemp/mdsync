@@ -488,6 +488,212 @@ def extract_frontmatter_metadata(markdown_content: str) -> dict:
         return {'title': None, 'labels': [], 'parent': None}
 
 
+def get_confluence_permissions_config():
+    """Get default permissions configuration from secrets.yaml."""
+    secrets_paths = [
+        Path.cwd() / 'secrets.yaml',
+        Path.cwd() / 'secrets.yml',
+        Path.home() / '.config' / 'mdsync' / 'secrets.yaml',
+        Path.home() / '.mdsync' / 'secrets.yaml',
+    ]
+    
+    for secrets_path in secrets_paths:
+        if secrets_path.exists():
+            try:
+                with open(secrets_path, 'r') as f:
+                    secrets = yaml.safe_load(f)
+                    if secrets and 'confluence' in secrets:
+                        perms = secrets['confluence'].get('permissions', {})
+                        if perms:
+                            return perms
+            except Exception:
+                pass
+    
+    return None
+
+
+def lock_confluence_page(page_id: str, confluence_url: str, username: str, api_token: str, 
+                        allowed_editors: dict = None) -> bool:
+    """Lock a Confluence page by setting edit restrictions.
+    
+    Similar to md2confluence's _apply_page_permissions.
+    Sets UPDATE restriction so only specified users/groups can edit.
+    Everyone else can view but not edit (read-only).
+    """
+    try:
+        import requests
+        import json
+        
+        # Get default permissions from config if not provided
+        if not allowed_editors:
+            perms_config = get_confluence_permissions_config()
+            if perms_config and 'allowed_editors' in perms_config:
+                allowed_editors = perms_config['allowed_editors']
+            else:
+                # Fallback: only current user
+                allowed_editors = {'users': [username], 'groups': []}
+        
+        # Always include current user to prevent lockout
+        editor_users = list(allowed_editors.get('users', []))
+        if username not in editor_users:
+            editor_users.append(username)
+            print(f"Auto-adding current user ({username}) to prevent lockout", file=sys.stderr)
+        
+        editor_groups = allowed_editors.get('groups', [])
+        
+        # Resolve user emails to account IDs
+        resolved_users = []
+        for email in editor_users:
+            account_id = _resolve_user_email_to_account_id(email, confluence_url, username, api_token)
+            if account_id:
+                resolved_users.append({"type": "known", "accountId": account_id})
+        
+        if not resolved_users:
+            print("Error: Could not resolve any users. Cannot lock page to prevent lockout.", file=sys.stderr)
+            return False
+        
+        # Build group restrictions
+        resolved_groups = [{"type": "group", "name": group} for group in editor_groups]
+        
+        # Create restrictions data
+        restrictions_data = [
+            {
+                "operation": "update",
+                "restrictions": {
+                    "user": resolved_users,
+                    "group": resolved_groups
+                }
+            }
+        ]
+        
+        # Apply restrictions
+        url = f"{confluence_url}/wiki/rest/api/content/{page_id}/restriction"
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+        
+        response = requests.put(
+            url,
+            headers=headers,
+            data=json.dumps(restrictions_data),
+            auth=(username, api_token)
+        )
+        
+        if response.status_code in [200, 201]:
+            return True
+        else:
+            print(f"Error locking page: {response.status_code} - {response.text}", file=sys.stderr)
+            return False
+            
+    except Exception as e:
+        print(f"Error locking Confluence page: {e}", file=sys.stderr)
+        return False
+
+
+def unlock_confluence_page(page_id: str, confluence_url: str, username: str, api_token: str) -> bool:
+    """Unlock a Confluence page by removing all restrictions."""
+    try:
+        import requests
+        
+        # Delete all restrictions
+        url = f"{confluence_url}/wiki/rest/api/content/{page_id}/restriction"
+        
+        response = requests.delete(
+            url,
+            auth=(username, api_token)
+        )
+        
+        if response.status_code in [200, 204]:
+            return True
+        else:
+            print(f"Error unlocking page: {response.status_code} - {response.text}", file=sys.stderr)
+            return False
+            
+    except Exception as e:
+        print(f"Error unlocking Confluence page: {e}", file=sys.stderr)
+        return False
+
+
+def check_confluence_lock_status(page_id: str, confluence_url: str, username: str, api_token: str):
+    """Check and display the lock status of a Confluence page."""
+    try:
+        import requests
+        
+        url = f"{confluence_url}/wiki/rest/api/content/{page_id}?expand=restrictions.read.restrictions.user,restrictions.read.restrictions.group,restrictions.update.restrictions.user,restrictions.update.restrictions.group"
+        
+        response = requests.get(
+            url,
+            auth=(username, api_token)
+        )
+        
+        if response.status_code != 200:
+            print(f"Error checking lock status: {response.status_code}", file=sys.stderr)
+            return
+        
+        data = response.json()
+        restrictions = data.get('restrictions', {})
+        
+        update_restrictions = restrictions.get('update', {}).get('restrictions', {})
+        read_restrictions = restrictions.get('read', {}).get('restrictions', {})
+        
+        if not update_restrictions.get('user', {}).get('results') and not update_restrictions.get('group', {}).get('results'):
+            print(f"Page {page_id} is UNLOCKED (no edit restrictions)")
+        else:
+            print(f"Page {page_id} is LOCKED (edit restricted)")
+            
+            users = update_restrictions.get('user', {}).get('results', [])
+            groups = update_restrictions.get('group', {}).get('results', [])
+            
+            if users:
+                print("  Allowed editors (users):")
+                for user in users:
+                    print(f"    - {user.get('displayName', user.get('accountId'))}")
+            
+            if groups:
+                print("  Allowed editors (groups):")
+                for group in groups:
+                    print(f"    - {group.get('name')}")
+        
+    except Exception as e:
+        print(f"Error checking Confluence lock status: {e}", file=sys.stderr)
+
+
+def _resolve_user_email_to_account_id(email: str, confluence_url: str, username: str, api_token: str) -> str:
+    """Resolve a user email to Confluence account ID."""
+    try:
+        import requests
+        
+        # Try current user endpoint first
+        if email == username:
+            url = f"{confluence_url}/wiki/rest/api/user/current"
+            response = requests.get(url, auth=(username, api_token))
+            if response.status_code == 200:
+                return response.json().get('accountId')
+        
+        # Search for user by email
+        search_url = f"{confluence_url}/wiki/rest/api/search/user"
+        params = {"cql": f'user="{email}"'}
+        
+        response = requests.get(
+            search_url,
+            params=params,
+            auth=(username, api_token)
+        )
+        
+        if response.status_code == 200:
+            results = response.json().get("results", [])
+            for user_data in results:
+                user_email = user_data.get("email", user_data.get("emailAddress", ""))
+                if user_email.lower() == email.lower():
+                    return user_data.get("accountId")
+        
+        return None
+        
+    except Exception:
+        return None
+
+
 def set_confluence_labels(page_id: str, labels: list, confluence_url: str, username: str, api_token: str) -> bool:
     """Set labels on a Confluence page authoritatively (replace all existing labels).
     
@@ -1051,6 +1257,14 @@ def main():
                        help='Check if a Google Doc is locked')
     parser.add_argument('--lock-reason', type=str, metavar='REASON',
                        help='Reason for locking (use with --lock)')
+    
+    # Confluence lock options
+    parser.add_argument('--lock-confluence', action='store_true',
+                       help='Lock a Confluence page (restrict editing to allowed editors from secrets.yaml)')
+    parser.add_argument('--unlock-confluence', action='store_true',
+                       help='Unlock a Confluence page (remove all edit restrictions)')
+    parser.add_argument('--confluence-lock-status', action='store_true',
+                       help='Check if a Confluence page is locked')
     parser.add_argument('--list-comments', action='store_true',
                        help='List all comments from a Google Doc')
     parser.add_argument('--unresolved-only', action='store_true',
@@ -1131,6 +1345,63 @@ def main():
         
         doc_id = extract_doc_id(args.source)
         list_revisions(doc_id, creds)
+        return
+    
+    # Handle Confluence lock/unlock operations
+    if args.lock_confluence or args.unlock_confluence or args.confluence_lock_status:
+        if not is_confluence_page(args.source):
+            print("Error: Source must be a Confluence page for lock operations", file=sys.stderr)
+            sys.exit(1)
+        
+        parsed = parse_confluence_destination(args.source)
+        page_id = parsed['page_id']
+        
+        if not page_id:
+            print("Error: Could not extract Confluence page ID", file=sys.stderr)
+            sys.exit(1)
+        
+        confluence_creds = get_confluence_credentials()
+        if not confluence_creds:
+            print("Error: Confluence credentials not found", file=sys.stderr)
+            sys.exit(1)
+        
+        if args.lock_confluence:
+            print(f"Locking Confluence page {page_id}...")
+            success = lock_confluence_page(
+                page_id,
+                confluence_creds['url'],
+                confluence_creds['username'],
+                confluence_creds['api_token']
+            )
+            if success:
+                print(f"✓ Page locked successfully")
+                print(f"  Only configured editors can now edit this page")
+            else:
+                print(f"✗ Failed to lock page", file=sys.stderr)
+                sys.exit(1)
+        
+        elif args.unlock_confluence:
+            print(f"Unlocking Confluence page {page_id}...")
+            success = unlock_confluence_page(
+                page_id,
+                confluence_creds['url'],
+                confluence_creds['username'],
+                confluence_creds['api_token']
+            )
+            if success:
+                print(f"✓ Page unlocked successfully")
+            else:
+                print(f"✗ Failed to unlock page", file=sys.stderr)
+                sys.exit(1)
+        
+        elif args.confluence_lock_status:
+            check_confluence_lock_status(
+                page_id,
+                confluence_creds['url'],
+                confluence_creds['username'],
+                confluence_creds['api_token']
+            )
+        
         return
     
     # Handle Confluence → Markdown
