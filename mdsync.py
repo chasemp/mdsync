@@ -159,6 +159,65 @@ def parse_confluence_destination(dest: str) -> dict:
     return result
 
 
+def get_confluence_credentials():
+    """Get Confluence credentials as a dict (for direct API calls)."""
+    # Look for Confluence credentials in multiple locations
+    confluence_url = os.getenv('CONFLUENCE_URL')
+    confluence_username = os.getenv('CONFLUENCE_USERNAME')
+    confluence_token = os.getenv('CONFLUENCE_API_TOKEN') or os.getenv('CONFLUENCE_TOKEN')
+    
+    # Try secrets.yaml first (preferred method)
+    secrets_paths = [
+        Path.cwd() / 'secrets.yaml',
+        Path.cwd() / 'secrets.yml',
+        Path.home() / '.config' / 'mdsync' / 'secrets.yaml',
+        Path.home() / '.mdsync' / 'secrets.yaml',
+    ]
+    
+    for secrets_path in secrets_paths:
+        if secrets_path.exists():
+            try:
+                with open(secrets_path, 'r') as f:
+                    secrets = yaml.safe_load(f)
+                    if secrets and 'confluence' in secrets:
+                        conf = secrets['confluence']
+                        confluence_url = confluence_url or conf.get('url')
+                        confluence_username = confluence_username or conf.get('username')
+                        confluence_token = confluence_token or conf.get('api_token') or conf.get('token')
+                        break
+            except Exception:
+                pass
+    
+    # Try confluence.json as fallback
+    if not all([confluence_url, confluence_username, confluence_token]):
+        config_paths = [
+            Path.cwd() / 'confluence.json',
+            Path.home() / '.config' / 'mdsync' / 'confluence.json',
+            Path.home() / '.mdsync' / 'confluence.json',
+        ]
+        
+        for config_path in config_paths:
+            if config_path.exists():
+                try:
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+                        confluence_url = confluence_url or config.get('url')
+                        confluence_username = confluence_username or config.get('username')
+                        confluence_token = confluence_token or config.get('api_token') or config.get('token')
+                        break
+                except Exception:
+                    pass
+    
+    if not all([confluence_url, confluence_username, confluence_token]):
+        return None
+    
+    return {
+        'url': confluence_url,
+        'username': confluence_username,
+        'api_token': confluence_token
+    }
+
+
 def get_confluence_client():
     """Get Confluence API client from secrets.yaml, environment variables, or config."""
     if not CONFLUENCE_AVAILABLE:
@@ -361,6 +420,9 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
         with open(markdown_path, 'r', encoding='utf-8') as f:
             markdown_content = f.read()
         
+        # Extract labels from frontmatter
+        frontmatter_labels = extract_frontmatter_labels(markdown_content)
+        
         # Get existing page to preserve space and version
         page = confluence.get_page_by_id(page_id, expand='version,space')
         
@@ -384,10 +446,24 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
             representation='storage'
         )
         
+        # Set labels authoritatively if any in frontmatter
+        if frontmatter_labels:
+            confluence_creds = get_confluence_credentials()
+            if confluence_creds:
+                set_confluence_labels(
+                    page_id, 
+                    frontmatter_labels, 
+                    confluence_creds['url'],
+                    confluence_creds['username'],
+                    confluence_creds['api_token']
+                )
+        
         if not quiet:
             print(f"✓ Successfully updated Confluence page: {title}")
             print(f"  Page ID: {page_id}")
             print(f"  Space: {space_key}")
+            if frontmatter_labels:
+                print(f"  Labels: {', '.join(frontmatter_labels)}")
         
     except FileNotFoundError:
         print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
@@ -397,14 +473,87 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
         sys.exit(1)
 
 
+def extract_frontmatter_labels(markdown_content: str) -> list:
+    """Extract labels from markdown frontmatter."""
+    try:
+        import frontmatter
+        post = frontmatter.loads(markdown_content)
+        return post.metadata.get('labels', [])
+    except Exception:
+        return []
+
+
+def set_confluence_labels(page_id: str, labels: list, confluence_url: str, username: str, api_token: str) -> bool:
+    """Set labels on a Confluence page authoritatively (replace all existing labels).
+    
+    Similar to md2confluence's _set_page_labels_authoritatively.
+    """
+    try:
+        import requests
+        import json
+        
+        # Step 1: Get existing labels
+        get_url = f"{confluence_url}/wiki/rest/api/content/{page_id}?expand=metadata.labels"
+        get_response = requests.get(
+            get_url,
+            auth=(username, api_token)
+        )
+        
+        existing_labels = []
+        if get_response.status_code == 200:
+            page_data = get_response.json()
+            if 'metadata' in page_data and 'labels' in page_data['metadata']:
+                existing_labels = [label['name'] for label in page_data['metadata']['labels']['results']]
+        
+        # Step 2: Remove all existing labels
+        if existing_labels:
+            for label_name in existing_labels:
+                delete_url = f"{confluence_url}/wiki/rest/api/content/{page_id}/label/{label_name}"
+                requests.delete(
+                    delete_url,
+                    auth=(username, api_token)
+                )
+        
+        # Step 3: Add new labels
+        if labels:
+            labels_data = [{"name": label} for label in labels]
+            
+            add_url = f"{confluence_url}/wiki/rest/api/content/{page_id}/label"
+            headers = {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            }
+            
+            add_response = requests.post(
+                add_url,
+                headers=headers,
+                data=json.dumps(labels_data),
+                auth=(username, api_token)
+            )
+            
+            return add_response.status_code == 200
+        
+        return True
+        
+    except Exception as e:
+        print(f"Warning: Could not set labels on page {page_id}: {e}", file=sys.stderr)
+        return False
+
+
 def create_confluence_page(markdown_path: str, confluence, space: str, title: str, 
-                          parent_id: Optional[str] = None, labels: Optional[list] = None,
-                          quiet: bool = False) -> str:
+                           parent_id: Optional[str] = None, labels: Optional[list] = None, 
+                           quiet: bool = False) -> str:
     """Create a new Confluence page from a Markdown file."""
     try:
         # Read the markdown file
         with open(markdown_path, 'r', encoding='utf-8') as f:
             markdown_content = f.read()
+        
+        # Extract labels from frontmatter
+        frontmatter_labels = extract_frontmatter_labels(markdown_content)
+        
+        # Combine CLI labels with frontmatter labels
+        all_labels = list(labels or []) + frontmatter_labels
         
         # Convert markdown to Confluence storage format
         storage_content = markdown_to_confluence_storage(markdown_content)
@@ -421,13 +570,18 @@ def create_confluence_page(markdown_path: str, confluence, space: str, title: st
         
         page_id = new_page['id']
         
-        # Add labels if provided
-        if labels:
-            for label in labels:
-                try:
-                    confluence.set_page_label(page_id, label)
-                except Exception:
-                    pass  # Ignore label errors
+        # Set labels authoritatively if any
+        if all_labels:
+            # Get Confluence credentials for label setting
+            confluence_creds = get_confluence_credentials()
+            if confluence_creds:
+                set_confluence_labels(
+                    page_id, 
+                    all_labels, 
+                    confluence_creds['url'],
+                    confluence_creds['username'],
+                    confluence_creds['api_token']
+                )
         
         if not quiet:
             print(f"✓ Created new Confluence page: {title}")
@@ -435,8 +589,8 @@ def create_confluence_page(markdown_path: str, confluence, space: str, title: st
             print(f"  Space: {space}")
             if parent_id:
                 print(f"  Parent ID: {parent_id}")
-            if labels:
-                print(f"  Labels: {', '.join(labels)}")
+            if all_labels:
+                print(f"  Labels: {', '.join(all_labels)}")
         
         return page_id
         
