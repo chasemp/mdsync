@@ -105,7 +105,7 @@ def export_gdoc_to_markdown(doc_id: str, creds) -> str:
         sys.exit(1)
 
 
-def import_markdown_to_gdoc(markdown_path: str, doc_id: str, creds):
+def import_markdown_to_gdoc(markdown_path: str, doc_id: str, creds, quiet: bool = False):
     """Import a Markdown file to a Google Doc."""
     try:
         # Read the markdown file
@@ -135,17 +135,18 @@ def import_markdown_to_gdoc(markdown_path: str, doc_id: str, creds):
             body=file_metadata
         ).execute()
         
-        print(f"Successfully updated Google Doc: {doc_id}")
+        if not quiet:
+            print(f"Successfully updated Google Doc: {doc_id}")
         
     except HttpError as error:
-        print(f"An error occurred: {error}")
+        print(f"An error occurred: {error}", file=sys.stderr)
         sys.exit(1)
     except FileNotFoundError:
-        print(f"Error: Markdown file not found: {markdown_path}")
+        print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
         sys.exit(1)
 
 
-def create_new_gdoc_from_markdown(markdown_path: str, creds) -> str:
+def create_new_gdoc_from_markdown(markdown_path: str, creds, quiet: bool = False) -> str:
     """Create a new Google Doc from a Markdown file."""
     try:
         # Build the Drive service
@@ -173,13 +174,15 @@ def create_new_gdoc_from_markdown(markdown_path: str, creds) -> str:
         ).execute()
         
         doc_id = file.get('id')
-        print(f"Created new Google Doc with ID: {doc_id}")
-        print(f"URL: https://docs.google.com/document/d/{doc_id}/edit")
+        
+        if not quiet:
+            print(f"Created new Google Doc with ID: {doc_id}")
+            print(f"URL: https://docs.google.com/document/d/{doc_id}/edit")
         
         return doc_id
         
     except HttpError as error:
-        print(f"An error occurred: {error}")
+        print(f"An error occurred: {error}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -190,7 +193,8 @@ def main():
                '  %(prog)s https://docs.google.com/document/d/DOC_ID/edit output.md\n'
                '  %(prog)s input.md https://docs.google.com/document/d/DOC_ID/edit\n'
                '  %(prog)s DOC_ID output.md\n'
-               '  %(prog)s input.md --create',
+               '  %(prog)s input.md --create\n'
+               '  %(prog)s input.md --create -u | pbcopy',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -199,6 +203,8 @@ def main():
                        help='Destination: Google Doc URL/ID or Markdown file')
     parser.add_argument('--create', action='store_true',
                        help='Create a new Google Doc (use with markdown source)')
+    parser.add_argument('-u', '--url-only', action='store_true',
+                       help='Output only the URL (perfect for piping to pbcopy)')
     
     args = parser.parse_args()
     
@@ -211,11 +217,12 @@ def main():
     if source_is_gdoc:
         # Google Doc → Markdown
         if not args.destination:
-            print("Error: Destination markdown file required")
+            print("Error: Destination markdown file required", file=sys.stderr)
             sys.exit(1)
         
         doc_id = extract_doc_id(args.source)
-        print(f"Exporting Google Doc {doc_id} to {args.destination}...")
+        if not args.url_only:
+            print(f"Exporting Google Doc {doc_id} to {args.destination}...")
         
         markdown_content = export_gdoc_to_markdown(doc_id, creds)
         
@@ -223,23 +230,30 @@ def main():
         with open(args.destination, 'w', encoding='utf-8') as f:
             f.write(markdown_content)
         
-        print(f"Successfully exported to {args.destination}")
+        if not args.url_only:
+            print(f"Successfully exported to {args.destination}")
     
     else:
         # Markdown → Google Doc
         if args.create:
             # Create a new Google Doc
-            print(f"Creating new Google Doc from {args.source}...")
-            create_new_gdoc_from_markdown(args.source, creds)
+            if not args.url_only:
+                print(f"Creating new Google Doc from {args.source}...")
+            doc_id = create_new_gdoc_from_markdown(args.source, creds, quiet=args.url_only)
+            if args.url_only:
+                print(f"https://docs.google.com/document/d/{doc_id}/edit")
         else:
             if not args.destination:
-                print("Error: Destination Google Doc URL/ID required (or use --create)")
+                print("Error: Destination Google Doc URL/ID required (or use --create)", file=sys.stderr)
                 sys.exit(1)
             
             doc_id = extract_doc_id(args.destination)
-            print(f"Importing {args.source} to Google Doc {doc_id}...")
+            if not args.url_only:
+                print(f"Importing {args.source} to Google Doc {doc_id}...")
             
-            import_markdown_to_gdoc(args.source, doc_id, creds)
+            import_markdown_to_gdoc(args.source, doc_id, creds, quiet=args.url_only)
+            if args.url_only:
+                print(f"https://docs.google.com/document/d/{doc_id}/edit")
 
 
 if __name__ == '__main__':
