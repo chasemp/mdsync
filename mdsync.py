@@ -1210,6 +1210,22 @@ def export_gdoc_to_markdown(doc_id: str, creds, output_path: str = None) -> str:
         sys.exit(1)
 
 
+def strip_frontmatter_for_gdoc(markdown_content: str) -> str:
+    """Strip frontmatter from markdown content for Google Doc sync."""
+    # Check if content has frontmatter
+    if markdown_content.startswith('---'):
+        # Find the end of frontmatter
+        lines = markdown_content.split('\n')
+        if len(lines) > 1 and lines[0] == '---':
+            for i, line in enumerate(lines[1:], 1):
+                if line.strip() == '---':
+                    # Found end of frontmatter, return content after it
+                    return '\n'.join(lines[i+1:]).strip()
+    
+    # No frontmatter found, return original content
+    return markdown_content
+
+
 def import_markdown_to_gdoc(markdown_path: str, doc_id: str, creds, quiet: bool = False):
     """Import a Markdown file to a Google Doc."""
     try:
@@ -1217,31 +1233,42 @@ def import_markdown_to_gdoc(markdown_path: str, doc_id: str, creds, quiet: bool 
         with open(markdown_path, 'r', encoding='utf-8') as f:
             markdown_content = f.read()
         
-        # Build the Drive service
-        drive_service = build('drive', 'v3', credentials=creds)
+        # Strip frontmatter for Google Doc (frontmatter is for markdown processing only)
+        content_for_gdoc = strip_frontmatter_for_gdoc(markdown_content)
         
-        # Create a temporary file with the markdown content
-        temp_file = io.BytesIO(markdown_content.encode('utf-8'))
+        # Create a temporary file with the cleaned content
+        temp_file_path = f"{markdown_path}.temp"
+        with open(temp_file_path, 'w', encoding='utf-8') as f:
+            f.write(content_for_gdoc)
         
-        # Update the document by uploading the markdown
-        media = MediaFileUpload(
-            markdown_path,
-            mimetype='text/markdown',
-            resumable=True
-        )
+        try:
+            # Build the Drive service
+            drive_service = build('drive', 'v3', credentials=creds)
+            
+            # Update the document by uploading the cleaned markdown
+            media = MediaFileUpload(
+                temp_file_path,
+                mimetype='text/markdown',
+                resumable=True
+            )
+            
+            file_metadata = {
+                'mimeType': 'application/vnd.google-apps.document'
+            }
+            
+            updated_file = drive_service.files().update(
+                fileId=doc_id,
+                media_body=media,
+                body=file_metadata
+            ).execute()
+            
+            if not quiet:
+                print(f"Successfully updated Google Doc: {doc_id}")
         
-        file_metadata = {
-            'mimeType': 'application/vnd.google-apps.document'
-        }
-        
-        updated_file = drive_service.files().update(
-            fileId=doc_id,
-            media_body=media,
-            body=file_metadata
-        ).execute()
-        
-        if not quiet:
-            print(f"Successfully updated Google Doc: {doc_id}")
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
         
     except HttpError as error:
         print(f"An error occurred: {error}", file=sys.stderr)
@@ -1254,42 +1281,63 @@ def import_markdown_to_gdoc(markdown_path: str, doc_id: str, creds, quiet: bool 
 def create_new_gdoc_from_markdown(markdown_path: str, creds, quiet: bool = False) -> str:
     """Create a new Google Doc from a Markdown file."""
     try:
-        # Build the Drive service
-        drive_service = build('drive', 'v3', credentials=creds)
+        # Read the markdown file
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            markdown_content = f.read()
         
-        # Get the base name for the document
-        doc_name = Path(markdown_path).stem
+        # Extract frontmatter metadata for title
+        metadata = extract_frontmatter_metadata(markdown_content)
         
-        # Upload the markdown file and convert it to Google Docs format
-        file_metadata = {
-            'name': doc_name,
-            'mimeType': 'application/vnd.google-apps.document'
-        }
+        # Strip frontmatter for Google Doc (frontmatter is for markdown processing only)
+        content_for_gdoc = strip_frontmatter_for_gdoc(markdown_content)
         
-        media = MediaFileUpload(
-            markdown_path,
-            mimetype='text/markdown',
-            resumable=True
-        )
+        # Create a temporary file with the cleaned content
+        temp_file_path = f"{markdown_path}.temp"
+        with open(temp_file_path, 'w', encoding='utf-8') as f:
+            f.write(content_for_gdoc)
         
-        file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id'
-        ).execute()
+        try:
+            # Build the Drive service
+            drive_service = build('drive', 'v3', credentials=creds)
+            
+            # Get the document name (frontmatter title takes priority over filename)
+            doc_name = metadata.get('title') or Path(markdown_path).stem
+            
+            # Upload the cleaned markdown file and convert it to Google Docs format
+            file_metadata = {
+                'name': doc_name,
+                'mimeType': 'application/vnd.google-apps.document'
+            }
+            
+            media = MediaFileUpload(
+                temp_file_path,
+                mimetype='text/markdown',
+                resumable=True
+            )
+            
+            file = drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+            
+            doc_id = file.get('id')
+            gdoc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+            
+            # Update frontmatter with the Google Doc URL
+            update_frontmatter_gdoc_url(markdown_path, gdoc_url)
+            
+            if not quiet:
+                print(f"Created new Google Doc with ID: {doc_id}")
+                print(f"URL: {gdoc_url}")
+                print(f"Updated frontmatter in {markdown_path}")
+            
+            return doc_id
         
-        doc_id = file.get('id')
-        gdoc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
-        
-        # Update frontmatter with the Google Doc URL
-        update_frontmatter_gdoc_url(markdown_path, gdoc_url)
-        
-        if not quiet:
-            print(f"Created new Google Doc with ID: {doc_id}")
-            print(f"URL: {gdoc_url}")
-            print(f"Updated frontmatter in {markdown_path}")
-        
-        return doc_id
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
         
     except HttpError as error:
         print(f"An error occurred: {error}", file=sys.stderr)
