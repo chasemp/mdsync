@@ -7,6 +7,7 @@ import os
 import sys
 import re
 import argparse
+import json
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -266,6 +267,140 @@ def check_lock_status(doc_id: str, creds):
         sys.exit(1)
 
 
+def list_comments(doc_id: str, creds, unresolved_only: bool = False, output_format: str = 'text'):
+    """List all comments from a Google Doc."""
+    try:
+        # Build the Drive service
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        # Get file name
+        file = drive_service.files().get(fileId=doc_id, fields='name').execute()
+        doc_name = file.get('name', 'Unknown')
+        
+        # Get all comments
+        comments_result = drive_service.comments().list(
+            fileId=doc_id,
+            fields='comments(id,content,author,createdTime,modifiedTime,resolved,quotedFileContent,replies,anchor)',
+            pageSize=100
+        ).execute()
+        
+        all_comments = comments_result.get('comments', [])
+        
+        # Handle pagination
+        while 'nextPageToken' in comments_result:
+            comments_result = drive_service.comments().list(
+                fileId=doc_id,
+                fields='comments(id,content,author,createdTime,modifiedTime,resolved,quotedFileContent,replies,anchor)',
+                pageSize=100,
+                pageToken=comments_result['nextPageToken']
+            ).execute()
+            all_comments.extend(comments_result.get('comments', []))
+        
+        # Filter if needed
+        if unresolved_only:
+            all_comments = [c for c in all_comments if not c.get('resolved', False)]
+        
+        if not all_comments:
+            if unresolved_only:
+                print("No unresolved comments found.")
+            else:
+                print("No comments found.")
+            return
+        
+        # Output based on format
+        if output_format == 'json':
+            print(json.dumps(all_comments, indent=2))
+        elif output_format == 'markdown':
+            print_comments_markdown(doc_name, doc_id, all_comments)
+        else:  # text
+            print_comments_text(doc_name, doc_id, all_comments)
+        
+    except HttpError as error:
+        print(f"An error occurred: {error}", file=sys.stderr)
+        sys.exit(1)
+
+
+def print_comments_text(doc_name: str, doc_id: str, comments: list):
+    """Print comments in text format."""
+    print(f"\nComments for: {doc_name}")
+    print(f"Document ID: {doc_id}")
+    print(f"URL: https://docs.google.com/document/d/{doc_id}/edit")
+    print(f"Total comments: {len(comments)}")
+    print("=" * 80)
+    
+    for i, comment in enumerate(comments, 1):
+        author = comment.get('author', {})
+        author_name = author.get('displayName', 'Unknown')
+        created = comment.get('createdTime', 'Unknown')
+        resolved = comment.get('resolved', False)
+        content = comment.get('content', '')
+        quoted = comment.get('quotedFileContent', {}).get('value', '')
+        
+        status = "✓ RESOLVED" if resolved else "○ OPEN"
+        
+        print(f"\n[{i}] {status}")
+        print(f"Author: {author_name}")
+        print(f"Created: {created}")
+        
+        if quoted:
+            print(f"Quoted text: \"{quoted}\"")
+        
+        print(f"Comment: {content}")
+        
+        # Print replies
+        replies = comment.get('replies', [])
+        if replies:
+            print(f"  Replies ({len(replies)}):")
+            for reply in replies:
+                reply_author = reply.get('author', {}).get('displayName', 'Unknown')
+                reply_content = reply.get('content', '')
+                reply_time = reply.get('createdTime', 'Unknown')
+                print(f"    → {reply_author} ({reply_time}): {reply_content}")
+        
+        print("-" * 80)
+
+
+def print_comments_markdown(doc_name: str, doc_id: str, comments: list):
+    """Print comments in Markdown format."""
+    print(f"# Comments: {doc_name}\n")
+    print(f"**Document ID:** {doc_id}  ")
+    print(f"**URL:** [Open Document](https://docs.google.com/document/d/{doc_id}/edit)  ")
+    print(f"**Total comments:** {len(comments)}\n")
+    print("---\n")
+    
+    for i, comment in enumerate(comments, 1):
+        author = comment.get('author', {})
+        author_name = author.get('displayName', 'Unknown')
+        created = comment.get('createdTime', 'Unknown')
+        resolved = comment.get('resolved', False)
+        content = comment.get('content', '')
+        quoted = comment.get('quotedFileContent', {}).get('value', '')
+        
+        status = "✓ RESOLVED" if resolved else "○ OPEN"
+        
+        print(f"## Comment {i} - {status}\n")
+        print(f"**Author:** {author_name}  ")
+        print(f"**Created:** {created}\n")
+        
+        if quoted:
+            print(f"> {quoted}\n")
+        
+        print(f"{content}\n")
+        
+        # Print replies
+        replies = comment.get('replies', [])
+        if replies:
+            print(f"### Replies ({len(replies)})\n")
+            for reply in replies:
+                reply_author = reply.get('author', {}).get('displayName', 'Unknown')
+                reply_content = reply.get('content', '')
+                reply_time = reply.get('createdTime', 'Unknown')
+                print(f"- **{reply_author}** ({reply_time}): {reply_content}")
+            print()
+        
+        print("---\n")
+
+
 def export_gdoc_to_markdown(doc_id: str, creds) -> str:
     """Export a Google Doc to Markdown format."""
     try:
@@ -388,7 +523,10 @@ def main():
                '  %(prog)s DOC_ID --list-revisions\n'
                '  %(prog)s DOC_ID --lock\n'
                '  %(prog)s DOC_ID --unlock\n'
-               '  %(prog)s DOC_ID --lock-status',
+               '  %(prog)s DOC_ID --lock-status\n'
+               '  %(prog)s DOC_ID --list-comments\n'
+               '  %(prog)s DOC_ID --list-comments --unresolved-only\n'
+               '  %(prog)s DOC_ID --list-comments --format json > comments.json',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -409,6 +547,13 @@ def main():
                        help='Check if a Google Doc is locked')
     parser.add_argument('--lock-reason', type=str, metavar='REASON',
                        help='Reason for locking (use with --lock)')
+    parser.add_argument('--list-comments', action='store_true',
+                       help='List all comments from a Google Doc')
+    parser.add_argument('--unresolved-only', action='store_true',
+                       help='Show only unresolved comments (use with --list-comments)')
+    parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
+                       default='text', metavar='FORMAT',
+                       help='Output format for comments: text, json, or markdown (default: text)')
     
     args = parser.parse_args()
     
@@ -434,6 +579,16 @@ def main():
         elif args.lock_status:
             check_lock_status(doc_id, creds)
         
+        return
+    
+    # Handle --list-comments flag
+    if args.list_comments:
+        if not source_is_gdoc:
+            print("Error: --list-comments only works with Google Docs", file=sys.stderr)
+            sys.exit(1)
+        
+        doc_id = extract_doc_id(args.source)
+        list_comments(doc_id, creds, unresolved_only=args.unresolved_only, output_format=args.format)
         return
     
     # Handle --list-revisions flag
