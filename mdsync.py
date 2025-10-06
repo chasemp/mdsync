@@ -113,12 +113,16 @@ def extract_doc_id(url_or_id: str) -> str:
 
 def is_google_doc(path: str) -> bool:
     """Check if the path is a Google Docs URL or ID."""
+    if not path:
+        return False
     return ('docs.google.com' in path or 
             ('/' not in path and '.' not in path and len(path) > 20))
 
 
 def is_confluence_page(path: str) -> bool:
     """Check if the path is a Confluence page URL or ID."""
+    if not path:
+        return False
     return ('atlassian.net/wiki' in path or 
             path.startswith('confluence:') or
             (path.isdigit() and len(path) < 20))  # Confluence page IDs are numeric
@@ -1651,9 +1655,19 @@ def list_markdown_files(path: str, output_format: str = 'text', check_status: bo
             sys.exit(1)
         files = [path]
     elif os.path.isdir(path):
-        # Find all markdown files in directory
+        # Find all markdown files in directory (exclude common build/cache directories)
         pattern = os.path.join(path, '**', '*.md')
-        files = glob.glob(pattern, recursive=True)
+        all_files = glob.glob(pattern, recursive=True)
+        
+        # Filter out common build/cache directories
+        exclude_dirs = {'venv', 'env', '.venv', '.env', 'node_modules', '.git', '__pycache__', '.pytest_cache', 'build', 'dist', '.tox'}
+        files = []
+        for file_path in all_files:
+            # Check if any part of the path contains excluded directories
+            path_parts = file_path.split(os.sep)
+            if not any(part in exclude_dirs for part in path_parts):
+                files.append(file_path)
+        
         if not files:
             print(f"No markdown files found in {path}")
             return
@@ -1790,7 +1804,15 @@ def main():
                '  %(prog)s confluence:SPACE/123456 output.md\n'
                '  %(prog)s https://site.atlassian.net/wiki/spaces/ENG/pages/123456 output.md\n\n'
                '  # List frontmatter\n'
-               '  %(prog)s list [file_or_directory]',
+               '  %(prog)s list [file_or_directory]\n'
+               '  %(prog)s list --check-status  # Check live frozen status\n'
+               '  %(prog)s list --format json   # JSON output\n\n'
+               '  # Diff (dry run)\n'
+               '  %(prog)s file.md gdoc_url --diff\n'
+               '  %(prog)s gdoc_url file.md --diff\n'
+               '  %(prog)s file.md confluence:SPACE/123 --diff\n\n'
+               '  # Intelligent destination detection\n'
+               '  %(prog)s file.md  # Auto-detect from frontmatter',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -1870,6 +1892,13 @@ def main():
     
     args = parser.parse_args()
     
+    # Validate required arguments
+    if not args.source:
+        print("Error: Source is required", file=sys.stderr)
+        print("Use: mdsync <source> [destination] or mdsync list [file_or_directory]", file=sys.stderr)
+        print("Run 'mdsync --help' for more information", file=sys.stderr)
+        sys.exit(1)
+    
     # Determine source and destination types
     source_is_gdoc = is_google_doc(args.source)
     source_is_confluence = is_confluence_page(args.source)
@@ -1879,14 +1908,14 @@ def main():
     dest_is_gdoc = args.destination and is_google_doc(args.destination)
     dest_is_markdown = args.destination and not dest_is_confluence and not dest_is_gdoc
     
-    # Get appropriate credentials early for diff operations
+    # Get appropriate credentials early for diff operations and intelligent destination detection
     creds = None
     confluence = None
     
-    if source_is_gdoc or dest_is_gdoc or args.create or args.lock or args.unlock or args.lock_status or args.list_revisions or args.list_comments or args.diff:
+    if source_is_gdoc or dest_is_gdoc or args.create or args.lock or args.unlock or args.lock_status or args.list_revisions or args.list_comments or args.diff or source_is_markdown:
         creds = get_credentials()
     
-    if source_is_confluence or dest_is_confluence or args.create_confluence or args.diff:
+    if source_is_confluence or dest_is_confluence or args.create_confluence or args.diff or source_is_markdown:
         confluence = get_confluence_client()
     
     # Handle diff operations (dry run) - must be before intelligent destination detection
