@@ -839,11 +839,23 @@ def main():
     
     args = parser.parse_args()
     
-    # Get credentials
-    creds = get_credentials()
-    
-    # Determine the sync direction
+    # Determine source and destination types
     source_is_gdoc = is_google_doc(args.source)
+    source_is_confluence = is_confluence_page(args.source)
+    source_is_markdown = not source_is_gdoc and not source_is_confluence
+    
+    dest_is_confluence = args.destination and is_confluence_page(args.destination)
+    dest_is_gdoc = args.destination and is_google_doc(args.destination)
+    
+    # Get appropriate credentials
+    creds = None
+    confluence = None
+    
+    if source_is_gdoc or dest_is_gdoc or args.create or args.lock or args.unlock or args.lock_status or args.list_revisions or args.list_comments:
+        creds = get_credentials()
+    
+    if source_is_confluence or dest_is_confluence or args.create_confluence:
+        confluence = get_confluence_client()
     
     # Handle lock/unlock operations
     if args.lock or args.unlock or args.lock_status:
@@ -883,8 +895,34 @@ def main():
         list_revisions(doc_id, creds)
         return
     
+    # Handle Confluence → Markdown
+    if source_is_confluence:
+        if not args.destination:
+            print("Error: Destination markdown file required", file=sys.stderr)
+            sys.exit(1)
+        
+        parsed = parse_confluence_destination(args.source)
+        page_id = parsed['page_id']
+        
+        if not page_id:
+            print("Error: Could not extract Confluence page ID", file=sys.stderr)
+            sys.exit(1)
+        
+        if not args.url_only:
+            print(f"Exporting Confluence page {page_id} to {args.destination}...")
+        
+        markdown_content = export_confluence_to_markdown(page_id, confluence)
+        
+        # Write to file
+        with open(args.destination, 'w', encoding='utf-8') as f:
+            f.write(markdown_content)
+        
+        if not args.url_only:
+            print(f"Successfully exported to {args.destination}")
+        return
+    
+    # Handle Google Doc → Markdown
     if source_is_gdoc:
-        # Google Doc → Markdown
         if not args.destination:
             print("Error: Destination markdown file required", file=sys.stderr)
             sys.exit(1)
@@ -902,10 +940,56 @@ def main():
         
         if not args.url_only:
             print(f"Successfully exported to {args.destination}")
+        return
     
-    else:
-        # Markdown → Google Doc
+    # Handle Markdown → Confluence
+    if source_is_markdown and (dest_is_confluence or args.create_confluence):
+        if args.create_confluence:
+            # Create new Confluence page
+            if not args.space or not args.title:
+                print("Error: --space and --title required with --create-confluence", file=sys.stderr)
+                sys.exit(1)
+            
+            labels = args.labels.split(',') if args.labels else None
+            
+            if not args.url_only:
+                print(f"Creating new Confluence page '{args.title}' in space {args.space}...")
+            
+            page_id = create_confluence_page(
+                args.source, confluence, args.space, args.title,
+                parent_id=args.parent_id, labels=labels, quiet=args.url_only
+            )
+            
+            if args.url_only:
+                # Get the page URL
+                page = confluence.get_page_by_id(page_id)
+                base_url = confluence.url.rstrip('/')
+                print(f"{base_url}/wiki/spaces/{args.space}/pages/{page_id}")
         
+        elif dest_is_confluence:
+            # Update existing Confluence page
+            parsed = parse_confluence_destination(args.destination)
+            page_id = parsed['page_id']
+            
+            if not page_id:
+                print("Error: Could not extract Confluence page ID from destination", file=sys.stderr)
+                sys.exit(1)
+            
+            if not args.url_only:
+                print(f"Updating Confluence page {page_id}...")
+            
+            import_markdown_to_confluence(args.source, page_id, confluence, quiet=args.url_only)
+            
+            if args.url_only:
+                page = confluence.get_page_by_id(page_id)
+                space_key = page['space']['key']
+                base_url = confluence.url.rstrip('/')
+                print(f"{base_url}/wiki/spaces/{space_key}/pages/{page_id}")
+        
+        return
+    
+    # Handle Markdown → Google Doc
+    if source_is_markdown and (dest_is_gdoc or args.create):
         if args.list_revisions:
             print("Error: --list-revisions only works with Google Docs", file=sys.stderr)
             sys.exit(1)
@@ -929,6 +1013,13 @@ def main():
             import_markdown_to_gdoc(args.source, doc_id, creds, quiet=args.url_only)
             if args.url_only:
                 print(f"https://docs.google.com/document/d/{doc_id}/edit")
+        
+        return
+    
+    # If we get here, show error
+    print("Error: Invalid source/destination combination", file=sys.stderr)
+    print("Run 'mdsync --help' for usage examples", file=sys.stderr)
+    sys.exit(1)
 
 
 if __name__ == '__main__':
