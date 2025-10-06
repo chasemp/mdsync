@@ -1639,7 +1639,7 @@ def create_new_gdoc_from_markdown(markdown_path: str, creds, quiet: bool = False
         sys.exit(1)
 
 
-def list_markdown_files(path: str, output_format: str = 'text'):
+def list_markdown_files(path: str, output_format: str = 'text', check_status: bool = False):
     """List frontmatter information for markdown files."""
     import glob
     import json
@@ -1661,6 +1661,13 @@ def list_markdown_files(path: str, output_format: str = 'text'):
         print(f"Error: {path} is not a valid file or directory", file=sys.stderr)
         sys.exit(1)
     
+    # Get credentials if status checking is enabled
+    creds = None
+    confluence = None
+    if check_status:
+        creds = get_credentials()
+        confluence = get_confluence_client()
+    
     results = []
     
     for file_path in files:
@@ -1673,17 +1680,39 @@ def list_markdown_files(path: str, output_format: str = 'text'):
             
             # Determine export locations
             export_locations = []
+            
+            # Check Google Doc
             if metadata.get('gdoc_url'):
-                export_locations.append({
+                gdoc_info = {
                     'type': 'Google Doc',
                     'url': metadata['gdoc_url']
-                })
+                }
+                
+                if check_status and creds:
+                    doc_id = extract_doc_id_from_url(metadata['gdoc_url'])
+                    if doc_id:
+                        is_frozen = check_gdoc_frozen_status(doc_id, creds)
+                        gdoc_info['frozen'] = is_frozen
+                        gdoc_info['status'] = 'frozen' if is_frozen else 'available'
+                
+                export_locations.append(gdoc_info)
             
+            # Check Confluence
             if metadata.get('confluence_url'):
-                export_locations.append({
+                confluence_info = {
                     'type': 'Confluence',
                     'url': metadata['confluence_url']
-                })
+                }
+                
+                if check_status and confluence:
+                    dest_info = parse_confluence_destination(metadata['confluence_url'])
+                    page_id = dest_info.get('page_id')
+                    if page_id:
+                        is_frozen = check_confluence_frozen_status(page_id, confluence)
+                        confluence_info['frozen'] = is_frozen
+                        confluence_info['status'] = 'frozen' if is_frozen else 'available'
+                
+                export_locations.append(confluence_info)
             
             file_info = {
                 'file': file_path,
@@ -1702,16 +1731,17 @@ def list_markdown_files(path: str, output_format: str = 'text'):
     if output_format == 'json':
         print(json.dumps(results, indent=2))
     else:
-        display_frontmatter_info(results)
+        display_frontmatter_info(results, check_status)
 
 
-def display_frontmatter_info(results):
+def display_frontmatter_info(results, check_status: bool = False):
     """Display frontmatter information in a readable format."""
     if not results:
         print("No markdown files with frontmatter found")
         return
     
-    print(f"Found {len(results)} markdown file(s) with frontmatter:")
+    status_text = " (with live status)" if check_status else ""
+    print(f"Found {len(results)} markdown file(s) with frontmatter{status_text}:")
     print("=" * 80)
     
     for info in results:
@@ -1726,7 +1756,18 @@ def display_frontmatter_info(results):
         if info['export_locations']:
             print("   Export Locations:")
             for location in info['export_locations']:
-                print(f"     • {location['type']}: {location['url']}")
+                status_icon = ""
+                status_text = ""
+                
+                if check_status and 'status' in location:
+                    if location['status'] == 'frozen':
+                        status_icon = " ❄️"
+                        status_text = " (frozen)"
+                    elif location['status'] == 'available':
+                        status_icon = " ✅"
+                        status_text = " (available)"
+                
+                print(f"     • {location['type']}: {location['url']}{status_icon}{status_text}")
         else:
             print("   Export Locations: None")
 
@@ -1805,12 +1846,10 @@ def main():
                        default='text', metavar='FORMAT',
                        help='Output format: text, json, or markdown (default: text)')
     
-    args = parser.parse_args()
-    
-    # Handle list command (special case)
-    if args.source == 'list':
+    # Handle list command (special case) - check before parsing main args
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == 'list':
         # Parse list command arguments manually
-        import sys
         list_args = sys.argv[2:]  # Skip 'mdsync' and 'list'
         
         # Parse list arguments
@@ -1819,13 +1858,17 @@ def main():
                                help='File or directory to scan (default: current directory)')
         list_parser.add_argument('--format', type=str, choices=['text', 'json'], default='text',
                                help='Output format: text or json (default: text)')
+        list_parser.add_argument('--check-status', action='store_true',
+                               help='Check live frozen status of destinations (requires credentials)')
         
         try:
             list_args_parsed = list_parser.parse_args(list_args)
-            list_markdown_files(list_args_parsed.path, list_args_parsed.format)
+            list_markdown_files(list_args_parsed.path, list_args_parsed.format, list_args_parsed.check_status)
             return
         except SystemExit:
             return
+    
+    args = parser.parse_args()
     
     # Determine source and destination types
     source_is_gdoc = is_google_doc(args.source)
