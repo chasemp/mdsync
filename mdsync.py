@@ -206,6 +206,172 @@ def get_confluence_client():
     )
 
 
+def markdown_to_confluence_storage(markdown_content: str) -> str:
+    """Convert markdown to Confluence storage format.
+    
+    This is a basic conversion. For more advanced conversion,
+    consider using a library like mistune or markdown2confluence.
+    """
+    # Basic conversions for common markdown patterns
+    content = markdown_content
+    
+    # Headers
+    content = re.sub(r'^# (.+)$', r'<h1>\1</h1>', content, flags=re.MULTILINE)
+    content = re.sub(r'^## (.+)$', r'<h2>\1</h2>', content, flags=re.MULTILINE)
+    content = re.sub(r'^### (.+)$', r'<h3>\1</h3>', content, flags=re.MULTILINE)
+    content = re.sub(r'^#### (.+)$', r'<h4>\1</h4>', content, flags=re.MULTILINE)
+    
+    # Bold and italic
+    content = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', content)
+    content = re.sub(r'\*(.+?)\*', r'<em>\1</em>', content)
+    content = re.sub(r'__(.+?)__', r'<strong>\1</strong>', content)
+    content = re.sub(r'_(.+?)_', r'<em>\1</em>', content)
+    
+    # Inline code
+    content = re.sub(r'`(.+?)`', r'<code>\1</code>', content)
+    
+    # Links
+    content = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2">\1</a>', content)
+    
+    # Line breaks
+    content = content.replace('\n\n', '<br/><br/>')
+    
+    return content
+
+
+def export_confluence_to_markdown(page_id: str, confluence) -> str:
+    """Export a Confluence page to Markdown format."""
+    try:
+        # Get page content
+        page = confluence.get_page_by_id(page_id, expand='body.storage')
+        
+        if not page:
+            print(f"Error: Page {page_id} not found", file=sys.stderr)
+            sys.exit(1)
+        
+        # Get the storage format content
+        storage_content = page['body']['storage']['value']
+        
+        # Basic HTML to Markdown conversion
+        # For production, consider using html2text or similar
+        markdown_content = storage_content
+        
+        # Remove HTML tags (basic conversion)
+        markdown_content = re.sub(r'<h1>(.+?)</h1>', r'# \1\n', markdown_content)
+        markdown_content = re.sub(r'<h2>(.+?)</h2>', r'## \1\n', markdown_content)
+        markdown_content = re.sub(r'<h3>(.+?)</h3>', r'### \1\n', markdown_content)
+        markdown_content = re.sub(r'<h4>(.+?)</h4>', r'#### \1\n', markdown_content)
+        markdown_content = re.sub(r'<strong>(.+?)</strong>', r'**\1**', markdown_content)
+        markdown_content = re.sub(r'<em>(.+?)</em>', r'*\1*', markdown_content)
+        markdown_content = re.sub(r'<code>(.+?)</code>', r'`\1`', markdown_content)
+        markdown_content = re.sub(r'<a href="([^"]+)">(.+?)</a>', r'[\2](\1)', markdown_content)
+        markdown_content = re.sub(r'<br\s*/?>', '\n', markdown_content)
+        markdown_content = re.sub(r'<p>(.+?)</p>', r'\1\n\n', markdown_content)
+        
+        # Remove remaining HTML tags
+        markdown_content = re.sub(r'<[^>]+>', '', markdown_content)
+        
+        return markdown_content.strip()
+        
+    except Exception as error:
+        print(f"An error occurred: {error}", file=sys.stderr)
+        sys.exit(1)
+
+
+def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, quiet: bool = False):
+    """Import a Markdown file to an existing Confluence page."""
+    try:
+        # Read the markdown file
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            markdown_content = f.read()
+        
+        # Get existing page to preserve space and version
+        page = confluence.get_page_by_id(page_id, expand='version')
+        
+        if not page:
+            print(f"Error: Page {page_id} not found", file=sys.stderr)
+            sys.exit(1)
+        
+        space_key = page['space']['key']
+        title = page['title']
+        
+        # Convert markdown to Confluence storage format
+        storage_content = markdown_to_confluence_storage(markdown_content)
+        
+        # Update the page
+        confluence.update_page(
+            page_id=page_id,
+            title=title,
+            body=storage_content,
+            parent_id=page.get('ancestors', [{}])[-1].get('id') if page.get('ancestors') else None,
+            type='page',
+            representation='storage'
+        )
+        
+        if not quiet:
+            print(f"✓ Successfully updated Confluence page: {title}")
+            print(f"  Page ID: {page_id}")
+            print(f"  Space: {space_key}")
+        
+    except FileNotFoundError:
+        print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as error:
+        print(f"An error occurred: {error}", file=sys.stderr)
+        sys.exit(1)
+
+
+def create_confluence_page(markdown_path: str, confluence, space: str, title: str, 
+                          parent_id: Optional[str] = None, labels: Optional[list] = None,
+                          quiet: bool = False) -> str:
+    """Create a new Confluence page from a Markdown file."""
+    try:
+        # Read the markdown file
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            markdown_content = f.read()
+        
+        # Convert markdown to Confluence storage format
+        storage_content = markdown_to_confluence_storage(markdown_content)
+        
+        # Create the page
+        new_page = confluence.create_page(
+            space=space,
+            title=title,
+            body=storage_content,
+            parent_id=parent_id,
+            type='page',
+            representation='storage'
+        )
+        
+        page_id = new_page['id']
+        
+        # Add labels if provided
+        if labels:
+            for label in labels:
+                try:
+                    confluence.set_page_label(page_id, label)
+                except Exception:
+                    pass  # Ignore label errors
+        
+        if not quiet:
+            print(f"✓ Created new Confluence page: {title}")
+            print(f"  Page ID: {page_id}")
+            print(f"  Space: {space}")
+            if parent_id:
+                print(f"  Parent ID: {parent_id}")
+            if labels:
+                print(f"  Labels: {', '.join(labels)}")
+        
+        return page_id
+        
+    except FileNotFoundError:
+        print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as error:
+        print(f"An error occurred: {error}", file=sys.stderr)
+        sys.exit(1)
+
+
 def list_revisions(doc_id: str, creds):
     """List all revisions for a Google Doc."""
     try:
@@ -612,30 +778,31 @@ def create_new_gdoc_from_markdown(markdown_path: str, creds, quiet: bool = False
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Sync between Google Docs and Markdown files',
+        description='Sync between Google Docs, Confluence, and Markdown files',
         epilog='Examples:\n'
+               '  # Google Docs\n'
                '  %(prog)s https://docs.google.com/document/d/DOC_ID/edit output.md\n'
-               '  %(prog)s input.md https://docs.google.com/document/d/DOC_ID/edit\n'
-               '  %(prog)s DOC_ID output.md\n'
+               '  %(prog)s input.md DOC_ID\n'
                '  %(prog)s input.md --create\n'
                '  %(prog)s input.md --create -u | pbcopy\n'
                '  %(prog)s DOC_ID --list-revisions\n'
-               '  %(prog)s DOC_ID --lock\n'
-               '  %(prog)s DOC_ID --unlock\n'
-               '  %(prog)s DOC_ID --lock-status\n'
                '  %(prog)s DOC_ID --list-comments\n'
-               '  %(prog)s DOC_ID --list-comments --unresolved-only\n'
-               '  %(prog)s DOC_ID --list-comments --format json > comments.json',
+               '  %(prog)s DOC_ID --lock\n\n'
+               '  # Confluence\n'
+               '  %(prog)s input.md confluence:SPACE/123456\n'
+               '  %(prog)s input.md --create-confluence --space ENG --title "My Page"\n'
+               '  %(prog)s confluence:SPACE/123456 output.md\n'
+               '  %(prog)s https://site.atlassian.net/wiki/spaces/ENG/pages/123456 output.md',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
-    parser.add_argument('source', help='Source: Google Doc URL/ID or Markdown file')
+    parser.add_argument('source', help='Source: Google Doc URL/ID, Confluence page, or Markdown file')
     parser.add_argument('destination', nargs='?', 
-                       help='Destination: Google Doc URL/ID or Markdown file')
+                       help='Destination: Google Doc URL/ID, Confluence page, or Markdown file')
+    
+    # Google Docs options
     parser.add_argument('--create', action='store_true',
                        help='Create a new Google Doc (use with markdown source)')
-    parser.add_argument('-u', '--url-only', action='store_true',
-                       help='Output only the URL (perfect for piping to pbcopy)')
     parser.add_argument('--list-revisions', action='store_true',
                        help='List revision history for a Google Doc')
     parser.add_argument('--lock', action='store_true',
@@ -650,9 +817,25 @@ def main():
                        help='List all comments from a Google Doc')
     parser.add_argument('--unresolved-only', action='store_true',
                        help='Show only unresolved comments (use with --list-comments)')
+    
+    # Confluence options
+    parser.add_argument('--create-confluence', action='store_true',
+                       help='Create a new Confluence page (use with markdown source)')
+    parser.add_argument('--space', type=str, metavar='SPACE',
+                       help='Confluence space key (required with --create-confluence)')
+    parser.add_argument('--title', type=str, metavar='TITLE',
+                       help='Page title (required with --create-confluence)')
+    parser.add_argument('--parent-id', type=str, metavar='PARENT_ID',
+                       help='Parent page ID for new Confluence page')
+    parser.add_argument('--labels', type=str, metavar='LABELS',
+                       help='Comma-separated labels for Confluence page')
+    
+    # General options
+    parser.add_argument('-u', '--url-only', action='store_true',
+                       help='Output only the URL (perfect for piping to pbcopy)')
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
                        default='text', metavar='FORMAT',
-                       help='Output format for comments: text, json, or markdown (default: text)')
+                       help='Output format: text, json, or markdown (default: text)')
     
     args = parser.parse_args()
     
