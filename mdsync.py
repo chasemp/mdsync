@@ -420,8 +420,9 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
         with open(markdown_path, 'r', encoding='utf-8') as f:
             markdown_content = f.read()
         
-        # Extract labels from frontmatter
-        frontmatter_labels = extract_frontmatter_labels(markdown_content)
+        # Extract metadata from frontmatter
+        frontmatter = extract_frontmatter_metadata(markdown_content)
+        frontmatter_labels = frontmatter['labels']
         
         # Get existing page to preserve space and version
         page = confluence.get_page_by_id(page_id, expand='version,space')
@@ -473,14 +474,18 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
         sys.exit(1)
 
 
-def extract_frontmatter_labels(markdown_content: str) -> list:
-    """Extract labels from markdown frontmatter."""
+def extract_frontmatter_metadata(markdown_content: str) -> dict:
+    """Extract metadata from markdown frontmatter (title, labels, etc.)."""
     try:
         import frontmatter
         post = frontmatter.loads(markdown_content)
-        return post.metadata.get('labels', [])
+        return {
+            'title': post.metadata.get('title'),
+            'labels': post.metadata.get('labels', []),
+            'parent': post.metadata.get('parent'),
+        }
     except Exception:
-        return []
+        return {'title': None, 'labels': [], 'parent': None}
 
 
 def set_confluence_labels(page_id: str, labels: list, confluence_url: str, username: str, api_token: str) -> bool:
@@ -543,17 +548,20 @@ def set_confluence_labels(page_id: str, labels: list, confluence_url: str, usern
 def create_confluence_page(markdown_path: str, confluence, space: str, title: str, 
                            parent_id: Optional[str] = None, labels: Optional[list] = None, 
                            quiet: bool = False) -> str:
-    """Create a new Confluence page from a Markdown file."""
+    """Create a new Confluence page from a Markdown file.
+    
+    Note: Labels from CLI and frontmatter are combined (CLI labels are applied first).
+    """
     try:
         # Read the markdown file
         with open(markdown_path, 'r', encoding='utf-8') as f:
             markdown_content = f.read()
         
-        # Extract labels from frontmatter
-        frontmatter_labels = extract_frontmatter_labels(markdown_content)
+        # Extract metadata from frontmatter
+        frontmatter = extract_frontmatter_metadata(markdown_content)
         
         # Combine CLI labels with frontmatter labels
-        all_labels = list(labels or []) + frontmatter_labels
+        all_labels = list(labels or []) + frontmatter['labels']
         
         # Convert markdown to Confluence storage format
         storage_content = markdown_to_confluence_storage(markdown_content)
@@ -1054,11 +1062,11 @@ def main():
     parser.add_argument('--space', type=str, metavar='SPACE',
                        help='Confluence space key (required with --create-confluence)')
     parser.add_argument('--title', type=str, metavar='TITLE',
-                       help='Page title (required with --create-confluence)')
+                       help='Page title (required with --create-confluence, overrides frontmatter title)')
     parser.add_argument('--parent-id', type=str, metavar='PARENT_ID',
                        help='Parent page ID for new Confluence page')
     parser.add_argument('--labels', type=str, metavar='LABELS',
-                       help='Comma-separated labels for Confluence page')
+                       help='Comma-separated labels for Confluence page (combined with frontmatter labels)')
     
     # General options
     parser.add_argument('-u', '--url-only', action='store_true',
@@ -1176,10 +1184,11 @@ def main():
     if source_is_markdown and (dest_is_confluence or args.create_confluence):
         if args.create_confluence:
             # Create new Confluence page
-            if not args.space or not args.title:
-                print("Error: --space and --title required with --create-confluence", file=sys.stderr)
+            if not args.space:
+                print("Error: --space required with --create-confluence", file=sys.stderr)
                 sys.exit(1)
             
+            # Title is optional - will use frontmatter or filename if not provided
             labels = args.labels.split(',') if args.labels else None
             
             if not args.url_only:
