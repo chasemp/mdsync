@@ -22,34 +22,64 @@ import io
 SCOPES = ['https://www.googleapis.com/auth/documents', 
           'https://www.googleapis.com/auth/drive.file']
 
-TOKEN_FILE = 'token.json'
-CREDENTIALS_FILE = 'credentials.json'
+
+def find_config_file(filename: str) -> Optional[str]:
+    """Find a config file in multiple possible locations."""
+    search_paths = [
+        Path.cwd() / filename,  # Current directory
+        Path.home() / '.config' / 'mdsync' / filename,  # XDG config
+        Path.home() / '.mdsync' / filename,  # Home directory
+    ]
+    
+    for path in search_paths:
+        if path.exists():
+            return str(path)
+    
+    return None
 
 
 def get_credentials():
     """Get or create Google API credentials."""
     creds = None
     
+    # Find token file
+    token_file = find_config_file('token.json')
+    
     # The file token.json stores the user's access and refresh tokens
-    if os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    if token_file and os.path.exists(token_file):
+        creds = Credentials.from_authorized_user_file(token_file, SCOPES)
     
     # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            if not os.path.exists(CREDENTIALS_FILE):
-                print(f"Error: {CREDENTIALS_FILE} not found!")
-                print("Please follow the setup instructions in README.md")
+            # Find credentials file
+            credentials_file = find_config_file('credentials.json')
+            
+            if not credentials_file:
+                print("Error: credentials.json not found!", file=sys.stderr)
+                print("Searched in:", file=sys.stderr)
+                print("  - Current directory", file=sys.stderr)
+                print("  - ~/.config/mdsync/", file=sys.stderr)
+                print("  - ~/.mdsync/", file=sys.stderr)
+                print("\nPlease follow the setup instructions in SETUP_GUIDE.md", file=sys.stderr)
                 sys.exit(1)
             
             flow = InstalledAppFlow.from_client_secrets_file(
-                CREDENTIALS_FILE, SCOPES)
+                credentials_file, SCOPES)
             creds = flow.run_local_server(port=0)
         
         # Save the credentials for the next run
-        with open(TOKEN_FILE, 'w') as token:
+        # Save in the same location as credentials, or current directory
+        if not token_file:
+            credentials_file = find_config_file('credentials.json')
+            if credentials_file:
+                token_file = str(Path(credentials_file).parent / 'token.json')
+            else:
+                token_file = 'token.json'
+        
+        with open(token_file, 'w') as token:
             token.write(creds.to_json())
     
     return creds

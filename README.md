@@ -11,41 +11,86 @@ A command-line utility to synchronize content between Google Docs and Markdown f
 
 ## Installation
 
-1. Clone this repository
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Quick Install
 
-3. Set up Google API credentials:
-   - Go to [Google Cloud Console](https://console.cloud.google.com/)
-   - Create a new project or select an existing one
-   - Enable the Google Docs API
-   - Create OAuth 2.0 credentials (Desktop app)
-   - Download the credentials and save as `credentials.json` in the project directory
+```bash
+# Clone the repository
+git clone https://github.com/chasemp/mdsync.git
+cd mdsync
+
+# Install as a command-line tool
+pip install -e .
+```
+
+Now you can use `mdsync` from anywhere!
+
+### Alternative: Install from GitHub
+
+```bash
+pip install git+https://github.com/chasemp/mdsync.git
+```
+
+### Alternative: Run Without Installing
+
+```bash
+# Clone and install dependencies
+git clone https://github.com/chasemp/mdsync.git
+cd mdsync
+pip install -r requirements.txt
+
+# Run directly
+./mdsync.py --help
+```
+
+See [INSTALL.md](INSTALL.md) for more installation options.
+
+### Set up Google API credentials
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select an existing one
+3. Enable the Google Docs API and Google Drive API
+4. Create OAuth 2.0 credentials (Desktop app)
+5. Download the credentials and save as `credentials.json` in one of:
+   - Current directory
+   - `~/.config/mdsync/credentials.json`
+   - `~/.mdsync/credentials.json`
+
+See [SETUP_GUIDE.md](SETUP_GUIDE.md) for detailed setup instructions.
 
 ## Usage
 
 ```bash
-python mdsync.py <source> <destination>
+mdsync <source> <destination>
 ```
 
 ### Examples
 
 Sync from Google Doc to Markdown file:
 ```bash
-python mdsync.py "https://docs.google.com/document/d/YOUR_DOC_ID/edit" output.md
+mdsync "https://docs.google.com/document/d/YOUR_DOC_ID/edit" output.md
 ```
 
 Sync from Markdown file to Google Doc:
 ```bash
-python mdsync.py input.md "https://docs.google.com/document/d/YOUR_DOC_ID/edit"
+mdsync input.md "https://docs.google.com/document/d/YOUR_DOC_ID/edit"
+```
+
+Create a new Google Doc from Markdown:
+```bash
+mdsync input.md --create
+```
+
+Create a new doc and copy URL to clipboard:
+```bash
+mdsync input.md --create -u | pbcopy
 ```
 
 You can also use just the document ID:
 ```bash
-python mdsync.py YOUR_DOC_ID output.md
+mdsync YOUR_DOC_ID output.md
 ```
+
+> **Note:** If you didn't install with pip, use `./mdsync.py` instead of `mdsync`
 
 ## First Run
 
