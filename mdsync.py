@@ -522,7 +522,13 @@ def extract_frontmatter_metadata(markdown_content: str) -> dict:
             'confluence_url': post.metadata.get('confluence_url'),
         }
     except Exception:
-        return {'title': None, 'labels': [], 'parent': None, 'gdoc_url': None, 'confluence_url': None}
+        return {
+            'title': None, 
+            'labels': [], 
+            'parent': None, 
+            'gdoc_url': None, 
+            'confluence_url': None
+        }
 
 
 def update_frontmatter_gdoc_url(markdown_path: str, gdoc_url: str) -> bool:
@@ -572,6 +578,59 @@ def update_frontmatter_confluence_url(markdown_path: str, confluence_url: str) -
         return True
     except Exception as e:
         print(f"Warning: Could not update frontmatter in {markdown_path}: {e}", file=sys.stderr)
+        return False
+
+
+def check_gdoc_frozen_status(doc_id: str, creds) -> bool:
+    """Check if a Google Doc is frozen (locked) at runtime."""
+    try:
+        # Use the existing check_lock_status function
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        # Get file metadata
+        file_metadata = drive_service.files().get(
+            fileId=doc_id,
+            fields='contentRestrictions'
+        ).execute()
+        
+        # Check if there are content restrictions
+        restrictions = file_metadata.get('contentRestrictions', [])
+        if restrictions:
+            for restriction in restrictions:
+                if restriction.get('readOnly') == True:
+                    return True
+        
+        return False
+    except Exception:
+        # If we can't check, assume not frozen
+        return False
+
+
+def check_confluence_frozen_status(page_id: str, confluence) -> bool:
+    """Check if a Confluence page is frozen (locked) at runtime."""
+    try:
+        # Get page restrictions
+        confluence_creds = get_confluence_credentials()
+        if not confluence_creds:
+            return False
+        
+        # Use the existing check_confluence_lock_status logic
+        import requests
+        
+        url = f"{confluence_creds['url']}/rest/api/content/{page_id}/restriction"
+        auth = (confluence_creds['username'], confluence_creds['api_token'])
+        
+        response = requests.get(url, auth=auth)
+        if response.status_code == 200:
+            restrictions = response.json()
+            # Check if there are UPDATE restrictions
+            for restriction in restrictions.get('restrictions', {}).get('update', {}).get('restrictions', []):
+                if restriction.get('type') == 'user' or restriction.get('type') == 'group':
+                    return True
+        
+        return False
+    except Exception:
+        # If we can't check, assume not frozen
         return False
 
 
@@ -1329,6 +1388,12 @@ def show_diff(content1: str, content2: str, label1: str, label2: str):
 def diff_markdown_to_gdoc(markdown_path: str, doc_id: str, creds):
     """Show diff between markdown file and Google Doc (dry run)."""
     try:
+        # Check if Google Doc is frozen
+        if check_gdoc_frozen_status(doc_id, creds):
+            print(f"⚠️  Google Doc is frozen (locked) - diff not available")
+            print(f"Use --unlock to enable syncing to this document")
+            return
+        
         # Read markdown file
         with open(markdown_path, 'r', encoding='utf-8') as f:
             markdown_content = f.read()
@@ -1384,16 +1449,22 @@ def diff_gdoc_to_markdown(doc_id: str, markdown_path: str, creds):
 def diff_markdown_to_confluence(markdown_path: str, confluence_dest: str, confluence):
     """Show diff between markdown file and Confluence page (dry run)."""
     try:
+        # Parse Confluence destination
+        dest_info = parse_confluence_destination(confluence_dest)
+        page_id = dest_info['page_id']
+        
+        # Check if Confluence page is frozen
+        if check_confluence_frozen_status(page_id, confluence):
+            print(f"⚠️  Confluence page is frozen (locked) - diff not available")
+            print(f"Use --unlock-confluence to enable syncing to this page")
+            return
+        
         # Read markdown file
         with open(markdown_path, 'r', encoding='utf-8') as f:
             markdown_content = f.read()
         
         # Strip frontmatter for comparison
         markdown_for_confluence = strip_frontmatter_for_gdoc(markdown_content)
-        
-        # Parse Confluence destination
-        dest_info = parse_confluence_destination(confluence_dest)
-        page_id = dest_info['page_id']
         
         # Export Confluence page to markdown
         confluence_markdown = export_confluence_to_markdown(page_id, confluence)
@@ -1420,6 +1491,12 @@ def diff_confluence_to_markdown(confluence_dest: str, markdown_path: str, conflu
         # Parse Confluence destination
         dest_info = parse_confluence_destination(confluence_dest)
         page_id = dest_info['page_id']
+        
+        # Check if Confluence page is frozen
+        if check_confluence_frozen_status(page_id, confluence):
+            print(f"⚠️  Confluence page is frozen (locked) - diff not available")
+            print(f"Use --unlock-confluence to enable syncing to this page")
+            return
         
         # Export Confluence page to markdown
         confluence_markdown = export_confluence_to_markdown(page_id, confluence)
@@ -1676,16 +1753,6 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
-    # Add subcommands
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
-    
-    # List command
-    list_parser = subparsers.add_parser('list', help='List frontmatter information for markdown files')
-    list_parser.add_argument('path', nargs='?', default='.', 
-                           help='File or directory to scan (default: current directory)')
-    list_parser.add_argument('--format', type=str, choices=['text', 'json'], default='text',
-                           help='Output format: text or json (default: text)')
-    
     # Main sync arguments
     parser.add_argument('source', nargs='?', help='Source: Google Doc URL/ID, Confluence page, or Markdown file')
     parser.add_argument('destination', nargs='?', 
@@ -1740,10 +1807,25 @@ def main():
     
     args = parser.parse_args()
     
-    # Handle list command
-    if args.command == 'list':
-        list_markdown_files(args.path, args.format)
-        return
+    # Handle list command (special case)
+    if args.source == 'list':
+        # Parse list command arguments manually
+        import sys
+        list_args = sys.argv[2:]  # Skip 'mdsync' and 'list'
+        
+        # Parse list arguments
+        list_parser = argparse.ArgumentParser()
+        list_parser.add_argument('path', nargs='?', default='.', 
+                               help='File or directory to scan (default: current directory)')
+        list_parser.add_argument('--format', type=str, choices=['text', 'json'], default='text',
+                               help='Output format: text or json (default: text)')
+        
+        try:
+            list_args_parsed = list_parser.parse_args(list_args)
+            list_markdown_files(list_args_parsed.path, list_args_parsed.format)
+            return
+        except SystemExit:
+            return
     
     # Determine source and destination types
     source_is_gdoc = is_google_doc(args.source)
@@ -1792,30 +1874,83 @@ def main():
     
     # Intelligent destination detection for markdown files
     if source_is_markdown and not args.destination and not args.create:
-        # Check if markdown has frontmatter with gdoc_url
+        # Check if markdown has frontmatter with URLs
         try:
             with open(args.source, 'r', encoding='utf-8') as f:
                 markdown_content = f.read()
             
             frontmatter = extract_frontmatter_metadata(markdown_content)
             gdoc_url = frontmatter.get('gdoc_url')
+            confluence_url = frontmatter.get('confluence_url')
             
+            available_destinations = []
+            frozen_destinations = []
+            
+            # Check Google Doc
             if gdoc_url:
-                # Extract doc ID from URL
                 doc_id = extract_doc_id_from_url(gdoc_url)
                 if doc_id:
-                    print(f"Found gdoc_url in frontmatter: {gdoc_url}")
-                    print(f"Auto-syncing to Google Doc {doc_id}")
-                    # Set destination to the Google Doc
-                    args.destination = f"https://docs.google.com/document/d/{doc_id}/edit"
-                    dest_is_gdoc = True
+                    # Check if frozen at runtime
+                    if check_gdoc_frozen_status(doc_id, creds):
+                        frozen_destinations.append(('gdoc', gdoc_url))
+                        print(f"⚠️  Google Doc is frozen: {gdoc_url}")
+                    else:
+                        available_destinations.append(('gdoc', f"https://docs.google.com/document/d/{doc_id}/edit", gdoc_url))
+            
+            # Check Confluence
+            if confluence_url:
+                # Parse Confluence URL to get page ID
+                dest_info = parse_confluence_destination(confluence_url)
+                page_id = dest_info.get('page_id')
+                if page_id:
+                    # Check if frozen at runtime
+                    if check_confluence_frozen_status(page_id, confluence):
+                        frozen_destinations.append(('confluence', confluence_url))
+                        print(f"⚠️  Confluence page is frozen: {confluence_url}")
+                    else:
+                        available_destinations.append(('confluence', confluence_url, confluence_url))
+            
+            if not available_destinations:
+                print("Error: No destination specified and no available URLs in frontmatter", file=sys.stderr)
+                if gdoc_url or confluence_url:
+                    print("All configured destinations are frozen. Use platform-specific unlock commands to enable syncing.", file=sys.stderr)
                 else:
-                    print("Error: Invalid gdoc_url in frontmatter", file=sys.stderr)
-                    sys.exit(1)
-            else:
-                print("Error: No destination specified and no gdoc_url in frontmatter", file=sys.stderr)
-                print("Use: mdsync file.md <destination> or add gdoc_url to frontmatter", file=sys.stderr)
+                    print("Use: mdsync file.md <destination> or add gdoc_url/confluence_url to frontmatter", file=sys.stderr)
                 sys.exit(1)
+            elif len(available_destinations) == 1:
+                # Single destination - auto-select
+                platform, url, original_url = available_destinations[0]
+                print(f"Found {platform} URL in frontmatter: {original_url}")
+                print(f"Auto-syncing to {platform.title()}")
+                args.destination = url
+                if platform == 'gdoc':
+                    dest_is_gdoc = True
+                elif platform == 'confluence':
+                    dest_is_confluence = True
+            else:
+                # Multiple destinations - ask user to choose
+                print("Multiple destinations found in frontmatter:")
+                for i, (platform, url, original_url) in enumerate(available_destinations, 1):
+                    print(f"  {i}. {platform.title()}: {original_url}")
+                
+                try:
+                    choice = input("Choose destination (1-{}): ".format(len(available_destinations)))
+                    choice_idx = int(choice) - 1
+                    if 0 <= choice_idx < len(available_destinations):
+                        platform, url, original_url = available_destinations[choice_idx]
+                        print(f"Selected {platform.title()}: {original_url}")
+                        args.destination = url
+                        if platform == 'gdoc':
+                            dest_is_gdoc = True
+                        elif platform == 'confluence':
+                            dest_is_confluence = True
+                    else:
+                        print("Invalid choice", file=sys.stderr)
+                        sys.exit(1)
+                except (ValueError, KeyboardInterrupt):
+                    print("Cancelled", file=sys.stderr)
+                    sys.exit(1)
+                    
         except FileNotFoundError:
             print(f"Error: Markdown file not found: {args.source}", file=sys.stderr)
             sys.exit(1)
