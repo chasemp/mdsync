@@ -28,6 +28,8 @@ setup(
         'google-auth-httplib2>=0.1.1',
         'google-api-python-client>=2.100.0',
         'markdown>=3.5.0',
+        'atlassian-python-api>=3.41.0',
+        'requests>=2.31.0',
     ],
     entry_points={
         'console_scripts': [

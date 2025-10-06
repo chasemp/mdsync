@@ -19,6 +19,14 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import io
 
+# Confluence imports
+try:
+    from atlassian import Confluence
+    CONFLUENCE_AVAILABLE = True
+except ImportError:
+    CONFLUENCE_AVAILABLE = False
+    Confluence = None
+
 # If modifying these scopes, delete the file token.json.
 SCOPES = ['https://www.googleapis.com/auth/documents', 
           'https://www.googleapis.com/auth/drive.file']
@@ -105,6 +113,97 @@ def is_google_doc(path: str) -> bool:
     """Check if the path is a Google Docs URL or ID."""
     return ('docs.google.com' in path or 
             ('/' not in path and '.' not in path and len(path) > 20))
+
+
+def is_confluence_page(path: str) -> bool:
+    """Check if the path is a Confluence page URL or ID."""
+    return ('atlassian.net/wiki' in path or 
+            path.startswith('confluence:') or
+            (path.isdigit() and len(path) < 20))  # Confluence page IDs are numeric
+
+
+def parse_confluence_destination(dest: str) -> dict:
+    """Parse Confluence destination into components."""
+    result = {'type': None, 'space': None, 'page_id': None, 'page_title': None, 'url': None}
+    
+    if dest.startswith('confluence:'):
+        # Format: confluence:SPACE/PAGE_ID or confluence:SPACE/Page+Title
+        parts = dest[11:].split('/', 1)  # Remove 'confluence:' prefix
+        result['type'] = 'confluence'
+        result['space'] = parts[0] if parts else None
+        if len(parts) > 1:
+            if parts[1].isdigit():
+                result['page_id'] = parts[1]
+            else:
+                result['page_title'] = parts[1].replace('+', ' ')
+    
+    elif 'atlassian.net/wiki' in dest:
+        # Parse Confluence URL
+        result['type'] = 'confluence'
+        result['url'] = dest
+        # Extract space and page ID from URL
+        import re
+        space_match = re.search(r'/spaces/([^/]+)', dest)
+        page_match = re.search(r'/pages/(\d+)', dest)
+        if space_match:
+            result['space'] = space_match.group(1)
+        if page_match:
+            result['page_id'] = page_match.group(1)
+    
+    elif dest.isdigit():
+        # Just a page ID
+        result['type'] = 'confluence'
+        result['page_id'] = dest
+    
+    return result
+
+
+def get_confluence_client():
+    """Get Confluence API client from environment variables or config."""
+    if not CONFLUENCE_AVAILABLE:
+        print("Error: Confluence support not available. Install with: pip install atlassian-python-api", file=sys.stderr)
+        sys.exit(1)
+    
+    # Look for Confluence credentials in multiple locations
+    confluence_url = os.getenv('CONFLUENCE_URL')
+    confluence_username = os.getenv('CONFLUENCE_USERNAME')
+    confluence_token = os.getenv('CONFLUENCE_API_TOKEN') or os.getenv('CONFLUENCE_TOKEN')
+    
+    # Try config files
+    config_paths = [
+        Path.home() / '.config' / 'mdsync' / 'confluence.json',
+        Path.home() / '.mdsync' / 'confluence.json',
+        Path.cwd() / 'confluence.json',
+    ]
+    
+    for config_path in config_paths:
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    confluence_url = confluence_url or config.get('url')
+                    confluence_username = confluence_username or config.get('username')
+                    confluence_token = confluence_token or config.get('token')
+                    break
+            except Exception:
+                pass
+    
+    if not all([confluence_url, confluence_username, confluence_token]):
+        print("Error: Confluence credentials not found!", file=sys.stderr)
+        print("Set environment variables:", file=sys.stderr)
+        print("  CONFLUENCE_URL=https://yoursite.atlassian.net", file=sys.stderr)
+        print("  CONFLUENCE_USERNAME=your-email@domain.com", file=sys.stderr)
+        print("  CONFLUENCE_API_TOKEN=your-api-token", file=sys.stderr)
+        print("\nOr create a config file at:", file=sys.stderr)
+        print("  ~/.config/mdsync/confluence.json", file=sys.stderr)
+        sys.exit(1)
+    
+    return Confluence(
+        url=confluence_url,
+        username=confluence_username,
+        password=confluence_token,
+        cloud=True
+    )
 
 
 def list_revisions(doc_id: str, creds):
