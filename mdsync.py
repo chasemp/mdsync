@@ -2001,7 +2001,7 @@ def main():
         return
     
     # Intelligent destination detection for markdown files
-    if source_is_markdown and not args.destination and not args.create:
+    if source_is_markdown and not args.destination and not args.create and not args.create_confluence:
         # Check if markdown has frontmatter with URLs
         try:
             with open(args.source, 'r', encoding='utf-8') as f:
