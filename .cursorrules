@@ -1,0 +1,32 @@
+# Cursor Rules for mdsync Repository
+
+## Git Operations
+- **NEVER commit changes automatically** - Always ask the user before running `git commit` or `git push`
+- **NEVER push to remote** without explicit user permission
+- Always show what changes will be committed before asking for permission
+- Use `git status` and `git diff` to show changes before committing
+
+## Code Changes
+- Always explain what changes are being made and why
+- Test changes when possible before suggesting commits
+- Ask for confirmation before making significant changes to core functionality
+
+## File Operations
+- Be careful with file moves, renames, and deletions
+- Always verify file paths and operations
+- Ask before overwriting existing files
+
+## Documentation
+- Update documentation when making functional changes
+- Keep README and setup guides current
+- Document new features and changes
+
+## Security
+- Never commit sensitive information (API keys, tokens, passwords)
+- Always use environment variables or config files for secrets
+- Ensure .gitignore is properly configured
+
+## Testing
+- Test functionality after making changes
+- Verify that examples and documentation still work
+- Check for breaking changes before suggesting commits
