@@ -468,8 +468,9 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
         # Generate Confluence URL
         confluence_url = f"{confluence.url.rstrip('/')}/wiki/spaces/{space_key}/pages/{page_id}"
         
-        # Convert markdown to Confluence storage format
-        storage_content = markdown_to_confluence_storage(markdown_content)
+        # Strip frontmatter and convert markdown to Confluence storage format
+        content_for_confluence = strip_frontmatter_for_remote_sync(markdown_content)
+        storage_content = markdown_to_confluence_storage(content_for_confluence)
         
         # Update the page
         confluence.update_page(
@@ -938,8 +939,9 @@ def create_confluence_page(markdown_path: str, confluence, space: str, title: st
         # Combine CLI labels with frontmatter labels
         all_labels = list(labels or []) + frontmatter['labels']
         
-        # Convert markdown to Confluence storage format
-        storage_content = markdown_to_confluence_storage(markdown_content)
+        # Strip frontmatter and convert markdown to Confluence storage format
+        content_for_confluence = strip_frontmatter_for_remote_sync(markdown_content)
+        storage_content = markdown_to_confluence_storage(content_for_confluence)
         
         # Create the page
         new_page = confluence.create_page(
@@ -1342,8 +1344,8 @@ def export_gdoc_to_markdown(doc_id: str, creds, output_path: str = None) -> str:
         sys.exit(1)
 
 
-def strip_frontmatter_for_gdoc(markdown_content: str) -> str:
-    """Strip frontmatter from markdown content for Google Doc sync."""
+def strip_frontmatter_for_remote_sync(markdown_content: str) -> str:
+    """Strip frontmatter from markdown content for remote platform sync (Google Docs, Confluence, etc.)."""
     # Check if content has frontmatter
     if markdown_content.startswith('---'):
         # Find the end of frontmatter
@@ -1403,7 +1405,7 @@ def diff_markdown_to_gdoc(markdown_path: str, doc_id: str, creds):
             markdown_content = f.read()
         
         # Strip frontmatter for comparison (same as what would be synced)
-        markdown_for_gdoc = strip_frontmatter_for_gdoc(markdown_content)
+        markdown_for_gdoc = strip_frontmatter_for_remote_sync(markdown_content)
         
         # Export Google Doc to markdown for comparison
         gdoc_markdown = export_gdoc_to_markdown(doc_id, creds)
@@ -1468,7 +1470,7 @@ def diff_markdown_to_confluence(markdown_path: str, confluence_dest: str, conflu
             markdown_content = f.read()
         
         # Strip frontmatter for comparison
-        markdown_for_confluence = strip_frontmatter_for_gdoc(markdown_content)
+        markdown_for_confluence = strip_frontmatter_for_remote_sync(markdown_content)
         
         # Export Confluence page to markdown
         confluence_markdown = export_confluence_to_markdown(page_id, confluence)
@@ -1533,7 +1535,7 @@ def import_markdown_to_gdoc(markdown_path: str, doc_id: str, creds, quiet: bool 
             markdown_content = f.read()
         
         # Strip frontmatter for Google Doc (frontmatter is for markdown processing only)
-        content_for_gdoc = strip_frontmatter_for_gdoc(markdown_content)
+        content_for_gdoc = strip_frontmatter_for_remote_sync(markdown_content)
         
         # Create a temporary file with the cleaned content
         temp_file_path = f"{markdown_path}.temp"
@@ -1588,7 +1590,7 @@ def create_new_gdoc_from_markdown(markdown_path: str, creds, quiet: bool = False
         metadata = extract_frontmatter_metadata(markdown_content)
         
         # Strip frontmatter for Google Doc (frontmatter is for markdown processing only)
-        content_for_gdoc = strip_frontmatter_for_gdoc(markdown_content)
+        content_for_gdoc = strip_frontmatter_for_remote_sync(markdown_content)
         
         # Create a temporary file with the cleaned content
         temp_file_path = f"{markdown_path}.temp"
