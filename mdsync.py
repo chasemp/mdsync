@@ -352,6 +352,14 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
         # Remove any <p> tags that markdown might have added
         content = re.sub(r'^<p>|</p>$', '', content)
         
+        # Handle success type - convert to note with success styling
+        if macro_type == 'success':
+            macro_type = 'note'
+            if not title:
+                title = "✅ Success"
+            elif not title.startswith('✅'):
+                title = f"✅ {title}"
+        
         # Build the macro with optional title
         macro_params = ""
         if title:

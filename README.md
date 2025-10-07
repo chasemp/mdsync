@@ -133,6 +133,14 @@ This creates a note box with a title.
 :::note
 This creates a note box without a title.
 :::
+
+:::success
+This creates a success box with a checkmark icon.
+:::
+
+:::success Task Completed
+This creates a success box with a custom title.
+:::
 ```
 
 ### Supported Macro Types
@@ -141,6 +149,7 @@ This creates a note box without a title.
 - `:::warning` - Warning boxes (yellow/orange)  
 - `:::tip` - Tip boxes (green)
 - `:::note` - Note boxes (gray)
+- `:::success` - Success boxes (gray with ✅ icon)
 
 All macros support optional titles and can contain any markdown content including code blocks, links, and formatting.
 
