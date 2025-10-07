@@ -343,6 +343,52 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
         confluence_content
     )
     
+    # Convert special syntax for Confluence macros (:::note, :::warning, etc.)
+    def convert_special_macro(match):
+        macro_type = match.group(1).lower()
+        title = match.group(2) if match.group(2) else ""
+        content = match.group(3).strip()
+        
+        # Remove any <p> tags that markdown might have added
+        content = re.sub(r'^<p>|</p>$', '', content)
+        
+        # Build the macro with optional title
+        macro_params = ""
+        if title:
+            macro_params = f'  <ac:parameter ac:name="title">{title}</ac:parameter>\n'
+        
+        return f'''<ac:structured-macro ac:name="{macro_type}">
+{macro_params}  <ac:rich-text-body>
+    <p>{content}</p>
+  </ac:rich-text-body>
+</ac:structured-macro>'''
+    
+    # Convert :::type [title] content ::: syntax
+    confluence_content = re.sub(
+        r':::(\w+)(?:\s+([^\n]+))?\n(.*?)\n:::',
+        convert_special_macro,
+        confluence_content,
+        flags=re.DOTALL
+    )
+    
+    # Convert block quotes to Confluence note macros
+    def convert_blockquote_to_note(match):
+        content = match.group(1).strip()
+        # Remove any <p> tags that markdown might have added
+        content = re.sub(r'^<p>|</p>$', '', content)
+        return f'''<ac:structured-macro ac:name="note">
+  <ac:rich-text-body>
+    <p>{content}</p>
+  </ac:rich-text-body>
+</ac:structured-macro>'''
+    
+    confluence_content = re.sub(
+        r'<blockquote>(.*?)</blockquote>',
+        convert_blockquote_to_note,
+        confluence_content,
+        flags=re.DOTALL
+    )
+    
     # Convert links - distinguish between internal pages and external URLs
     def convert_link(match):
         href = match.group(1)

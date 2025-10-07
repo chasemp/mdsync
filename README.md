@@ -6,7 +6,12 @@ A command-line utility to synchronize content between Google Docs and Markdown f
 
 - Sync from Google Docs to Markdown files
 - Sync from Markdown files to Google Docs
+- Sync from Markdown files to Confluence pages
+- Sync from Confluence pages to Markdown files
 - Leverages Google Docs native Markdown support
+- Confluence note/info/warning/tip macro support
+- Intelligent destination detection from frontmatter
+- Live status checking for frozen documents
 - Simple command-line interface
 
 ## Installation
@@ -91,6 +96,53 @@ mdsync YOUR_DOC_ID output.md
 ```
 
 > **Note:** If you didn't install with pip, use `./mdsync.py` instead of `mdsync`
+
+## Confluence Notes and Macros
+
+mdsync supports creating Confluence note, info, warning, and tip macros from markdown. This allows you to create visually distinct callout boxes in your Confluence pages.
+
+### Block Quote Notes
+
+Regular markdown block quotes are automatically converted to Confluence note macros:
+
+```markdown
+> This is an important note that will appear in a Confluence note box.
+```
+
+### Special Syntax Macros
+
+You can use special syntax to create different types of Confluence macros:
+
+```markdown
+:::info Important Information
+This creates an info box with a title.
+:::
+
+:::warning Security Warning
+This creates a warning box with a title.
+:::
+
+:::tip Pro Tip
+This creates a tip box with a title.
+:::
+
+:::note Implementation Note
+This creates a note box with a title.
+:::
+
+:::note
+This creates a note box without a title.
+:::
+```
+
+### Supported Macro Types
+
+- `:::info` - Information boxes (blue)
+- `:::warning` - Warning boxes (yellow/orange)  
+- `:::tip` - Tip boxes (green)
+- `:::note` - Note boxes (gray)
+
+All macros support optional titles and can contain any markdown content including code blocks, links, and formatting.
 
 ## First Run
 
