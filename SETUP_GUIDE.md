@@ -12,8 +12,14 @@ gdoc_url: https://docs.google.com/document/d/14kt6q7FAKfWdSV3nNz8X5qMvZ49TTiSH8c
 
 This guide will walk you through setting up Google API credentials for mdsync.
 
-## Step 1: Install Dependencies
+## Step 1: Install mdsync
 
+### Option A: Homebrew (Recommended for macOS)
+```bash
+brew install chasemp/tap/mdsync
+```
+
+### Option B: Manual Installation
 Run the setup script:
 ```bash
 ./setup.sh

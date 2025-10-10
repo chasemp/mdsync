@@ -30,3 +30,16 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Development and testing files
+test-*.md
+example-*.md
+TAB_*.md
+tab-*.md
+*_analysis.md
+*_summary.md
+*_workflow.py
+*_example.py
+*_test.py
+base-document.md
+mdsync.zip

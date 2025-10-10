@@ -9,7 +9,27 @@ batch:
 
 # Installation Guide
 
-## Method 1: Install Locally (Recommended)
+## Method 1: Homebrew (Recommended for macOS)
+
+The easiest way to install mdsync on macOS:
+
+```bash
+brew install chasemp/tap/mdsync
+```
+
+This automatically installs mdsync and all required dependencies.
+
+### Update mdsync
+```bash
+brew upgrade mdsync
+```
+
+### Uninstall mdsync
+```bash
+brew uninstall mdsync
+```
+
+## Method 2: Install Locally
 
 Install `mdsync` as a command-line tool that you can run from anywhere:
 
