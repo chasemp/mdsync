@@ -12,7 +12,7 @@ long_description = (this_directory / "README.md").read_text()
 
 setup(
     name='mdsync',
-    version='1.4.0',
+    version='0.2.0',
     description='Sync between Google Docs and Markdown files',
     long_description=long_description,
     long_description_content_type='text/markdown',

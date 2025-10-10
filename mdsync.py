@@ -2546,6 +2546,48 @@ def ensure_heading_formatting_in_gdoc(doc_id: str, creds, quiet: bool = False) -
             print(f"Warning: Could not format headings: {e}")
 
 
+def generate_batch_id(title: str) -> str:
+    """
+    Generate a clean, short batch ID from a title.
+    
+    Examples:
+        "Software Assurance Maturity Plan" -> "samp"
+        "API Documentation" -> "api-docs"
+        "Project Alpha v2.0" -> "project-alpha-v2-0"
+    
+    Args:
+        title (str): Human-readable batch title
+        
+    Returns:
+        str: Clean batch ID suitable for command-line usage
+    """
+    import re
+    
+    # Convert to lowercase and replace spaces/special chars with hyphens
+    clean_id = re.sub(r'[^a-zA-Z0-9\s-]', '', title.lower())
+    clean_id = re.sub(r'\s+', '-', clean_id.strip())
+    
+    # Remove multiple consecutive hyphens
+    clean_id = re.sub(r'-+', '-', clean_id)
+    
+    # Remove leading/trailing hyphens
+    clean_id = clean_id.strip('-')
+    
+    # If empty or too short, generate from first letters
+    if len(clean_id) < 3:
+        words = title.split()
+        if len(words) >= 2:
+            clean_id = ''.join(word[0].lower() for word in words[:3])
+        else:
+            clean_id = title.lower()[:8]
+    
+    # Ensure it starts with a letter
+    if clean_id and not clean_id[0].isalpha():
+        clean_id = 'batch-' + clean_id
+    
+    return clean_id or 'batch'
+
+
 def create_batch_document_simple(markdown_files: list, title: str, quiet: bool = False, include_headers: bool = False, include_horizontal_sep: bool = False, include_title: bool = True, include_toc: bool = False) -> str:
     """
     Create a Google Doc by combining multiple markdown files client-side.
@@ -2667,7 +2709,8 @@ def create_batch_document_simple(markdown_files: list, title: str, quiet: bool =
             
             # Update frontmatter for all individual files with batch information
             if doc_id:
-                batch_id = f"batch_{doc_id}"
+                # Generate a clean batch ID from the title
+                batch_id = generate_batch_id(title)
                 for i, markdown_path in enumerate(markdown_files):
                     try:
                         # Read the file again to get current content
@@ -2709,6 +2752,7 @@ def create_batch_document_simple(markdown_files: list, title: str, quiet: bool =
             # Print batch info at the end
             if doc_id and not quiet:
                 print(f"\nbatch: {title}")
+                print(f"batch_id: {batch_id}")
                 print(f"URL: https://docs.google.com/document/d/{doc_id}/edit")
             
             return doc_id
@@ -2853,18 +2897,20 @@ def update_batch_by_name(batch_identifier: str, quiet: bool = False) -> None:
     Update an existing batch by finding all files that belong to it.
     
     This function can find a batch by either:
-    1. Batch name (searches for files with matching batch_title)
-    2. Google Doc ID (searches for files with matching doc_id)
+    1. Batch ID (searches for files with matching batch_id)
+    2. Batch title (searches for files with matching batch_title)
+    3. Google Doc ID (searches for files with matching doc_id)
     
     It then updates the Google Doc with all the found files in the correct order.
     
     Args:
-        batch_identifier (str): Either batch name or Google Doc ID
+        batch_identifier (str): Batch ID, batch title, or Google Doc ID
         quiet (bool): If True, suppress output messages
         
     Example:
-        update_batch_by_name("My Project Batch")
-        update_batch_by_name("1ABC123def456")
+        update_batch_by_name("samp")  # Batch ID
+        update_batch_by_name("Software Assurance Maturity Plan")  # Batch title
+        update_batch_by_name("1ABC123def456")  # Google Doc ID
     """
     try:
         # Find all markdown files that belong to this batch
@@ -2888,10 +2934,12 @@ def update_batch_by_name(batch_identifier: str, quiet: bool = False) -> None:
                             batch_info = metadata['batch']
                             batch_doc_id = batch_info.get('doc_id', '')
                             batch_name = batch_info.get('batch_title', '')
+                            batch_id = batch_info.get('batch_id', '')
                             
                             # Check if this file belongs to the specified batch
-                            # Exact match for doc_id, or exact/partial match for batch name
-                            if (batch_identifier == batch_doc_id or 
+                            # Match by batch_id, doc_id, or batch_title (exact or partial)
+                            if (batch_identifier == batch_id or
+                                batch_identifier == batch_doc_id or 
                                 batch_identifier.lower() == batch_name.lower() or
                                 (len(batch_identifier) > 3 and batch_identifier.lower() in batch_name.lower())):
                                 
@@ -2973,11 +3021,27 @@ def update_batch_by_name(batch_identifier: str, quiet: bool = False) -> None:
             body_content = doc.get('body', {}).get('content', [])
             if len(body_content) > 1:
                 # Delete everything after the first paragraph
+                # Find the last element that's not just a newline
+                last_content_index = 1
+                for i in range(len(body_content) - 1, 0, -1):
+                    element = body_content[i]
+                    if 'paragraph' in element or 'table' in element or 'tableOfContents' in element:
+                        last_content_index = i
+                        break
+                
+                # Get the end index of the last content element, excluding trailing newline
+                last_element = body_content[last_content_index]
+                end_index = last_element.get('endIndex', 1)
+                
+                # Ensure we don't include the final newline character
+                if end_index > 1:
+                    end_index = end_index - 1
+                
                 delete_requests = [{
                     'deleteContentRange': {
                         'range': {
                             'startIndex': body_content[1].get('startIndex', 1),
-                            'endIndex': body_content[-1].get('endIndex', 1)
+                            'endIndex': end_index
                         }
                     }
                 }]
@@ -3319,6 +3383,7 @@ def list_batch_groupings(directory: str, quiet: bool = False) -> None:
                     doc_id = batch_info.get('doc_id', 'Unknown')
                     
                     print(f"\nBatch: {batch_title}")
+                    print(f"  Batch ID: {batch_id}")
                     print(f"  Document ID: {doc_id}")
                     print(f"  URL: https://docs.google.com/document/d/{doc_id}/edit")
                     print(f"  Files ({len(files)}):")
@@ -3420,7 +3485,8 @@ def main():
                '  %(prog)s --batch file1.md file2.md --batch-headers --batch-horizontal-sep --batch-toc\n'
                '  %(prog)s DIRECTORY --list-batch\n'
                '  %(prog)s DOC_ID --diff-batch\n'
-               '  %(prog)s BATCH_NAME --batch-update\n\n'
+               '  %(prog)s BATCH_ID --batch-update\n'
+               '  %(prog)s "Batch Title" --batch-update\n\n'
                '  # Confluence\n'
                '  %(prog)s input.md confluence:SPACE/123456\n'
                '  %(prog)s input.md --create-confluence --space ENG --title "My Page"\n'
@@ -3490,7 +3556,7 @@ def main():
     parser.add_argument('--diff-batch', action='store_true',
                        help='Diff entire batch against Google Doc (use with batch document ID)')
     parser.add_argument('--batch-update', action='store_true',
-                       help='Update existing batch by finding all files in current directory (use with batch name or doc ID)')
+                       help='Update existing batch by finding all files in current directory (use with batch ID, title, or doc ID)')
     parser.add_argument('--batch', nargs='+', metavar='MARKDOWN_FILE',
                        help='Create a new Google Doc with multiple markdown files as headings (simple client-side combination)')
     parser.add_argument('--batch-title', type=str, metavar='TITLE',
@@ -3512,7 +3578,7 @@ def main():
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
                        default='text', metavar='FORMAT',
                        help='Output format: text, json, or markdown (default: text)')
-    parser.add_argument('--version', action='version', version='mdsync 1.4.0',
+    parser.add_argument('--version', action='version', version='mdsync 0.2.0',
                        help='Show version information and exit')
     
     # Handle list command (special case) - check before parsing main args
@@ -3994,8 +4060,10 @@ def main():
     
     if args.batch_update:
         if not args.source:
-            print("Error: Batch name or Google Doc ID required for --batch-update", file=sys.stderr)
-            print("Use: mdsync BATCH_NAME_OR_DOC_ID --batch-update", file=sys.stderr)
+            print("Error: Batch ID, title, or Google Doc ID required for --batch-update", file=sys.stderr)
+            print("Use: mdsync BATCH_ID --batch-update", file=sys.stderr)
+            print("     mdsync 'Batch Title' --batch-update", file=sys.stderr)
+            print("     mdsync DOC_ID --batch-update", file=sys.stderr)
             sys.exit(1)
         
         # Update existing batch by finding all files
