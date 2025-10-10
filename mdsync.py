@@ -3512,6 +3512,8 @@ def main():
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
                        default='text', metavar='FORMAT',
                        help='Output format: text, json, or markdown (default: text)')
+    parser.add_argument('--version', action='version', version='mdsync 0.1.0',
+                       help='Show version information and exit')
     
     # Handle list command (special case) - check before parsing main args
     import sys
