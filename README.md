@@ -24,11 +24,24 @@ A command-line utility to synchronize content between Google Docs and Markdown f
 - Confluence note/info/warning/tip macro support
 - Intelligent destination detection from frontmatter
 - Live status checking for frozen documents
+- **Sync Date Tracking**: Automatic timestamps for created/modified dates in frontmatter
 - Simple command-line interface
 
 ## Installation
 
-### Quick Install
+### Homebrew (Recommended)
+
+The easiest way to install mdsync on macOS:
+
+```bash
+brew install chasemp/tap/mdsync
+```
+
+This automatically installs mdsync and all required dependencies.
+
+### Manual Installation
+
+#### Quick Install
 
 ```bash
 # Clone the repository
@@ -41,13 +54,13 @@ pip install -e .
 
 Now you can use `mdsync` from anywhere!
 
-### Alternative: Install from GitHub
+#### Alternative: Install from GitHub
 
 ```bash
 pip install git+https://github.com/chasemp/mdsync.git
 ```
 
-### Alternative: Run Without Installing
+#### Alternative: Run Without Installing
 
 ```bash
 # Clone and install dependencies
@@ -60,6 +73,21 @@ pip install -r requirements.txt
 ```
 
 See [INSTALL.md](INSTALL.md) for more installation options.
+
+### Homebrew Tap
+
+mdsync is available through the [chasemp/homebrew-tap](https://github.com/chasemp/homebrew-tap) repository. This tap provides easy installation and updates for mdsync and other tools.
+
+```bash
+# Install mdsync from the tap
+brew install chasemp/tap/mdsync
+
+# Update mdsync
+brew upgrade mdsync
+
+# Uninstall mdsync
+brew uninstall mdsync
+```
 
 ### Set up Google API credentials
 
