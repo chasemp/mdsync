@@ -1,3 +1,13 @@
+---
+batch:
+  batch_id: batch_1-T_8kHyPdwGzeOiztJ60UIWNoiWkLSfxMnxNpIMQuac
+  batch_title: Test Batch Detection
+  doc_id: 1-T_8kHyPdwGzeOiztJ60UIWNoiWkLSfxMnxNpIMQuac
+  heading_title: Setup Guide
+  url: https://docs.google.com/document/d/1-T_8kHyPdwGzeOiztJ60UIWNoiWkLSfxMnxNpIMQuac/edit
+gdoc_url: https://docs.google.com/document/d/14kt6q7FAKfWdSV3nNz8X5qMvZ49TTiSH8c2bqyS_Wk4/edit
+---
+
 # Setup Guide for mdsync
 
 This guide will walk you through setting up Google API credentials for mdsync.
@@ -71,3 +81,49 @@ Make sure you've added your email as a test user in the OAuth consent screen con
 
 ### Rate Limits
 If you hit rate limits, you may need to wait or request a quota increase in the Google Cloud Console.
+
+## Batch Documents and Table of Contents
+
+Once you have mdsync set up, you can create batch documents that combine multiple markdown files with automatic table of contents generation.
+
+### Creating Batch Documents with TOC
+
+**Basic batch with table of contents:**
+```bash
+mdsync --batch file1.md file2.md file3.md --batch-toc
+```
+
+**Batch with file titles as headers and TOC:**
+```bash
+mdsync --batch file1.md file2.md --batch-headers --batch-toc
+```
+
+**Full featured batch document:**
+```bash
+mdsync --batch file1.md file2.md file3.md --batch-title "Project Documentation" --batch-headers --batch-horizontal-sep --batch-toc
+```
+
+### How TOC Works
+
+- **Without `--batch-headers`**: Uses existing H1 headings (`# heading`) from your markdown files
+- **With `--batch-headers`**: File titles become H1 headings (`# File Title`)
+- **TOC links**: Automatically generated and clickable in Google Docs
+- **Navigation**: Appears at the top of the document for easy navigation
+
+### Example Workflow
+
+1. **Create individual markdown files** with H1 headings:
+   ```markdown
+   # Getting Started
+   This section covers basic setup...
+   
+   # Installation
+   Follow these steps to install...
+   ```
+
+2. **Combine into batch document**:
+   ```bash
+   mdsync --batch getting-started.md installation.md --batch-toc
+   ```
+
+3. **Result**: A Google Doc with a clickable table of contents linking to each H1 section.

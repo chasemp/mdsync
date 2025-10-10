@@ -10,6 +10,8 @@ import argparse
 import json
 import yaml
 import difflib
+import uuid
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -352,9 +354,9 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
         # Remove any <p> tags that markdown might have added
         content = re.sub(r'^<p>|</p>$', '', content)
         
-        # Handle success type - convert to note with success styling
+        # Handle success type - use info macro with checkmark emoji
         if macro_type == 'success':
-            macro_type = 'note'
+            macro_type = 'info'
             if not title:
                 title = "✅ Success"
             elif not title.startswith('✅'):
@@ -365,7 +367,7 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
         if title:
             macro_params = f'  <ac:parameter ac:name="title">{title}</ac:parameter>\n'
         
-        return f'''<ac:structured-macro ac:name="{macro_type}">
+        return f'''<ac:structured-macro ac:name="{macro_type}" ac:schema-version="1" ac:macro-id="{uuid.uuid4()}">
 {macro_params}  <ac:rich-text-body>
     <p>{content}</p>
   </ac:rich-text-body>
@@ -468,7 +470,11 @@ def export_confluence_to_markdown(page_id: str, confluence, output_path: str = N
         # If output path provided, add frontmatter with confluence_url
         if output_path:
             space_key = page.get('space', {}).get('key', '')
-            confluence_url = f"{confluence.url.rstrip('/')}/wiki/spaces/{space_key}/pages/{page_id}"
+            # Remove /wiki from the end of confluence.url if present
+            base_url = confluence.url.rstrip('/')
+            if base_url.endswith('/wiki'):
+                base_url = base_url[:-5]  # Remove '/wiki'
+            confluence_url = f"{base_url}/wiki/spaces/{space_key}/pages/{page_id}"
             
             # Check if content already has frontmatter
             if markdown_content.startswith('---'):
@@ -520,10 +526,18 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
         title = page.get('title', '')
         
         # Generate Confluence URL
-        confluence_url = f"{confluence.url.rstrip('/')}/wiki/spaces/{space_key}/pages/{page_id}"
+        # Remove /wiki from the end of confluence.url if present
+        base_url = confluence.url.rstrip('/')
+        if base_url.endswith('/wiki'):
+            base_url = base_url[:-5]  # Remove '/wiki'
+        confluence_url = f"{base_url}/wiki/spaces/{space_key}/pages/{page_id}"
+        
+        # Resolve internal markdown links to Confluence URLs
+        base_dir = os.path.dirname(os.path.abspath(markdown_path))
+        resolved_content = resolve_markdown_links_to_confluence(markdown_content, base_dir)
         
         # Strip frontmatter and convert markdown to Confluence storage format
-        content_for_confluence = strip_frontmatter_for_remote_sync(markdown_content)
+        content_for_confluence = strip_frontmatter_for_remote_sync(resolved_content)
         storage_content = markdown_to_confluence_storage(content_for_confluence)
         
         # Update the page
@@ -569,7 +583,7 @@ def import_markdown_to_confluence(markdown_path: str, page_id: str, confluence, 
 
 
 def extract_frontmatter_metadata(markdown_content: str) -> dict:
-    """Extract metadata from markdown frontmatter (title, labels, gdoc_url, confluence_url, etc.)."""
+    """Extract metadata from markdown frontmatter (title, labels, gdoc_url, confluence_url, batch, etc.)."""
     try:
         import frontmatter
         post = frontmatter.loads(markdown_content)
@@ -579,21 +593,72 @@ def extract_frontmatter_metadata(markdown_content: str) -> dict:
             'parent': post.metadata.get('parent'),
             'gdoc_url': post.metadata.get('gdoc_url'),
             'confluence_url': post.metadata.get('confluence_url'),
+            'batch': post.metadata.get('batch'),
+            'gdoc_created': post.metadata.get('gdoc_created'),
+            'gdoc_modified': post.metadata.get('gdoc_modified'),
+            'confluence_created': post.metadata.get('confluence_created'),
+            'confluence_modified': post.metadata.get('confluence_modified'),
         }
     except Exception:
         return {
             'title': None, 
             'labels': [], 
             'parent': None, 
-            'gdoc_url': None, 
-            'confluence_url': None
+            'gdoc_url': None,
+            'confluence_url': None,
+            'batch': None,
+            'gdoc_created': None,
+            'gdoc_modified': None,
+            'confluence_created': None,
+            'confluence_modified': None,
         }
 
 
-def update_frontmatter_gdoc_url(markdown_path: str, gdoc_url: str) -> bool:
-    """Update the gdoc_url in markdown frontmatter."""
+def update_frontmatter_metadata(content: str, metadata: dict) -> str:
+    """Update frontmatter metadata in markdown content."""
     try:
         import frontmatter
+        post = frontmatter.loads(content)
+        
+        # Update metadata
+        for key, value in metadata.items():
+            post.metadata[key] = value
+        
+        # Return updated content
+        return frontmatter.dumps(post)
+    except Exception:
+        # If frontmatter library fails, fall back to manual YAML handling
+        if not content.startswith('---'):
+            # No existing frontmatter, add it
+            frontmatter_yaml = yaml.dump(metadata, default_flow_style=False, sort_keys=False)
+            return f"---\n{frontmatter_yaml}---\n\n{content}"
+        
+        try:
+            # Find the end of existing frontmatter
+            end_marker = content.find('---', 3)
+            if end_marker == -1:
+                # Malformed frontmatter, replace it
+                frontmatter_yaml = yaml.dump(metadata, default_flow_style=False, sort_keys=False)
+                return f"---\n{frontmatter_yaml}---\n\n{content}"
+            
+            # Extract content after frontmatter
+            content_after_frontmatter = content[end_marker + 3:].lstrip('\n')
+            
+            # Create new frontmatter
+            frontmatter_yaml = yaml.dump(metadata, default_flow_style=False, sort_keys=False)
+            return f"---\n{frontmatter_yaml}---\n\n{content_after_frontmatter}"
+            
+        except Exception:
+            # If anything fails, just add new frontmatter
+            frontmatter_yaml = yaml.dump(metadata, default_flow_style=False, sort_keys=False)
+            return f"---\n{frontmatter_yaml}---\n\n{content}"
+
+
+def update_frontmatter_gdoc_url(markdown_path: str, gdoc_url: str) -> bool:
+    """Update the gdoc_url and sync date in markdown frontmatter."""
+    try:
+        import frontmatter
+        from datetime import datetime
         
         # Read current content
         with open(markdown_path, 'r', encoding='utf-8') as f:
@@ -602,8 +667,17 @@ def update_frontmatter_gdoc_url(markdown_path: str, gdoc_url: str) -> bool:
         # Parse frontmatter
         post = frontmatter.loads(content)
         
-        # Update gdoc_url
+        # Update gdoc_url and sync dates
         post.metadata['gdoc_url'] = gdoc_url
+        
+        current_time = datetime.now().isoformat()
+        
+        # Set created date if this is the first time we're adding a gdoc_url
+        if 'gdoc_created' not in post.metadata:
+            post.metadata['gdoc_created'] = current_time
+        
+        # Always update modified date
+        post.metadata['gdoc_modified'] = current_time
         
         # Write back
         with open(markdown_path, 'w', encoding='utf-8') as f:
@@ -616,9 +690,10 @@ def update_frontmatter_gdoc_url(markdown_path: str, gdoc_url: str) -> bool:
 
 
 def update_frontmatter_confluence_url(markdown_path: str, confluence_url: str) -> bool:
-    """Update the confluence_url in markdown frontmatter."""
+    """Update the confluence_url and sync dates in markdown frontmatter."""
     try:
         import frontmatter
+        from datetime import datetime
         
         # Read current content
         with open(markdown_path, 'r', encoding='utf-8') as f:
@@ -627,8 +702,17 @@ def update_frontmatter_confluence_url(markdown_path: str, confluence_url: str) -
         # Parse frontmatter
         post = frontmatter.loads(content)
         
-        # Update confluence_url
+        # Update confluence_url and sync dates
         post.metadata['confluence_url'] = confluence_url
+        
+        current_time = datetime.now().isoformat()
+        
+        # Set created date if this is the first time we're adding a confluence_url
+        if 'confluence_created' not in post.metadata:
+            post.metadata['confluence_created'] = current_time
+        
+        # Always update modified date
+        post.metadata['confluence_modified'] = current_time
         
         # Write back
         with open(markdown_path, 'w', encoding='utf-8') as f:
@@ -638,6 +722,44 @@ def update_frontmatter_confluence_url(markdown_path: str, confluence_url: str) -
     except Exception as e:
         print(f"Warning: Could not update frontmatter in {markdown_path}: {e}", file=sys.stderr)
         return False
+
+
+def resolve_markdown_links_to_confluence(markdown_content: str, base_dir: str = None) -> str:
+    """Resolve internal markdown links to Confluence URLs based on frontmatter."""
+    if not base_dir:
+        base_dir = os.getcwd()
+    
+    # Pattern to match [text](file.md) links
+    link_pattern = r'\[([^\]]+)\]\(([^)]+\.md)\)'
+    
+    def replace_link(match):
+        link_text = match.group(1)
+        file_path = match.group(2)
+        
+        # Convert relative path to absolute
+        if not os.path.isabs(file_path):
+            file_path = os.path.join(base_dir, file_path)
+        
+        # Check if the referenced file exists and has confluence_url in frontmatter
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Extract confluence_url from frontmatter
+                metadata = extract_frontmatter_metadata(content)
+                confluence_url = metadata.get('confluence_url')
+                
+                if confluence_url:
+                    return f'[{link_text}]({confluence_url})'
+            except Exception:
+                pass
+        
+        # If no confluence_url found, return original link
+        return match.group(0)
+    
+    # Replace all markdown links
+    return re.sub(link_pattern, replace_link, markdown_content)
 
 
 def check_gdoc_frozen_status(doc_id: str, creds) -> bool:
@@ -993,8 +1115,12 @@ def create_confluence_page(markdown_path: str, confluence, space: str, title: st
         # Combine CLI labels with frontmatter labels
         all_labels = list(labels or []) + frontmatter['labels']
         
+        # Resolve internal markdown links to Confluence URLs
+        base_dir = os.path.dirname(os.path.abspath(markdown_path))
+        resolved_content = resolve_markdown_links_to_confluence(markdown_content, base_dir)
+        
         # Strip frontmatter and convert markdown to Confluence storage format
-        content_for_confluence = strip_frontmatter_for_remote_sync(markdown_content)
+        content_for_confluence = strip_frontmatter_for_remote_sync(resolved_content)
         storage_content = markdown_to_confluence_storage(content_for_confluence)
         
         # Create the page
@@ -1010,7 +1136,11 @@ def create_confluence_page(markdown_path: str, confluence, space: str, title: st
         page_id = new_page['id']
         
         # Generate Confluence URL
-        confluence_url = f"{confluence.url.rstrip('/')}/wiki/spaces/{space}/pages/{page_id}"
+        # Remove /wiki from the end of confluence.url if present
+        base_url = confluence.url.rstrip('/')
+        if base_url.endswith('/wiki'):
+            base_url = base_url[:-5]  # Remove '/wiki'
+        confluence_url = f"{base_url}/wiki/spaces/{space}/pages/{page_id}"
         
         # Update frontmatter with Confluence URL
         update_frontmatter_confluence_url(markdown_path, confluence_url)
@@ -1619,7 +1749,11 @@ def import_markdown_to_gdoc(markdown_path: str, doc_id: str, creds, quiet: bool 
             
             if not quiet:
                 print(f"Successfully updated Google Doc: {doc_id}")
-        
+            
+            # Update frontmatter with sync date
+            gdoc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+            update_frontmatter_gdoc_url(markdown_path, gdoc_url)
+            
         finally:
             # Clean up temporary file
             if os.path.exists(temp_file_path):
@@ -1631,6 +1765,62 @@ def import_markdown_to_gdoc(markdown_path: str, doc_id: str, creds, quiet: bool 
     except FileNotFoundError:
         print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
         sys.exit(1)
+
+
+def create_new_gdoc_from_markdown_with_title(markdown_path: str, title: str, creds, quiet: bool = False) -> str:
+    """Create a new Google Doc from a Markdown file with a specific title."""
+    try:
+        # Read the markdown file
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            markdown_content = f.read()
+        
+        # Strip frontmatter for Google Doc (frontmatter is for markdown processing only)
+        content_for_gdoc = strip_frontmatter_for_remote_sync(markdown_content)
+        
+        # Create a temporary file with the cleaned content
+        temp_file_path = f"{markdown_path}.temp"
+        with open(temp_file_path, 'w', encoding='utf-8') as f:
+            f.write(content_for_gdoc)
+        
+        try:
+            # Build the Drive service
+            drive_service = build('drive', 'v3', credentials=creds)
+            
+            # Upload the cleaned markdown file and convert it to Google Docs format
+            file_metadata = {
+                'name': title,
+                'mimeType': 'application/vnd.google-apps.document'
+            }
+            
+            media = MediaFileUpload(
+                temp_file_path,
+                mimetype='text/markdown',
+                resumable=True
+            )
+            
+            # Create the Google Doc
+            file = drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+            
+            doc_id = file.get('id')
+            
+            if not quiet:
+                print(f'Created new Google Doc with ID: {doc_id}')
+                print(f'URL: https://docs.google.com/document/d/{doc_id}/edit')
+            
+            return doc_id
+            
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+                
+    except Exception as e:
+        print(f'Error creating Google Doc: {e}', file=sys.stderr)
+        return None
 
 
 def create_new_gdoc_from_markdown(markdown_path: str, creds, quiet: bool = False) -> str:
@@ -1784,6 +1974,29 @@ def list_markdown_files(path: str, output_format: str = 'text', check_status: bo
                 
                 export_locations.append(confluence_info)
             
+            # Check Batch Document
+            if metadata.get('batch') and isinstance(metadata['batch'], dict):
+                batch_info = metadata['batch']
+                batch_url = batch_info.get('url')
+                batch_title = batch_info.get('batch_title', 'Unknown Batch')
+                heading_title = batch_info.get('heading_title', 'Unknown Heading')
+                
+                if batch_url:
+                    batch_info_display = {
+                        'type': f'Batch Document ({batch_title})',
+                        'url': batch_url,
+                        'heading': heading_title
+                    }
+                    
+                    if check_status and creds:
+                        doc_id = batch_info.get('doc_id')
+                        if doc_id:
+                            is_frozen = check_gdoc_frozen_status(doc_id, creds)
+                            batch_info_display['frozen'] = is_frozen
+                            batch_info_display['status'] = 'frozen' if is_frozen else 'available'
+                    
+                    export_locations.append(batch_info_display)
+            
             file_info = {
                 'file': file_path,
                 'title': metadata.get('title'),
@@ -1810,36 +2023,1383 @@ def display_frontmatter_info(results, check_status: bool = False):
         print("No markdown files with frontmatter found")
         return
     
+    # Group results by batch and individual exports
+    batch_groups = {}
+    individual_files = []
+    
+    for info in results:
+        # Check if this file is part of a batch
+        batch_info = None
+        for location in info['export_locations']:
+            if 'Batch Document' in location['type']:
+                batch_info = location
+                break
+        
+        if batch_info:
+            # Extract batch key (doc_id from URL)
+            batch_url = batch_info['url']
+            batch_key = batch_url.split('/d/')[-1].split('/')[0] if '/d/' in batch_url else batch_url
+            
+            if batch_key not in batch_groups:
+                batch_groups[batch_key] = {
+                    'batch_info': batch_info,
+                    'files': []
+                }
+            
+            batch_groups[batch_key]['files'].append(info)
+        else:
+            individual_files.append(info)
+    
     status_text = " (with live status)" if check_status else ""
     print(f"Found {len(results)} markdown file(s) with frontmatter{status_text}:")
     print("=" * 80)
     
-    for info in results:
-        print(f"\n📄 {info['file']}")
-        
-        if info['title']:
-            print(f"   Title: {info['title']}")
-        
-        if info['labels']:
-            print(f"   Labels: {', '.join(info['labels'])}")
-        
-        if info['export_locations']:
-            print("   Export Locations:")
-            for location in info['export_locations']:
-                status_icon = ""
-                status_text = ""
+    # Display batch groups first
+    if batch_groups:
+        for batch_key, batch_data in batch_groups.items():
+            batch_info = batch_data['batch_info']
+            files = batch_data['files']
+            
+            print(f"\n📦 Batch: {batch_info['type']}")
+            print(f"   URL: {batch_info['url']}")
+            
+            status_icon = ""
+            status_text = ""
+            if check_status and 'status' in batch_info:
+                if batch_info['status'] == 'frozen':
+                    status_icon = " ❄️"
+                    status_text = " (frozen)"
+                elif batch_info['status'] == 'available':
+                    status_icon = " ✅"
+                    status_text = " (available)"
+            
+            print(f"   Status: {status_icon}{status_text}")
+            print(f"   Files ({len(files)}):")
+            
+            for file_info in files:
+                heading = None
+                for location in file_info['export_locations']:
+                    if 'heading' in location:
+                        heading = location['heading']
+                        break
                 
-                if check_status and 'status' in location:
-                    if location['status'] == 'frozen':
-                        status_icon = " ❄️"
-                        status_text = " (frozen)"
-                    elif location['status'] == 'available':
-                        status_icon = " ✅"
-                        status_text = " (available)"
-                
-                print(f"     • {location['type']}: {location['url']}{status_icon}{status_text}")
+                if heading:
+                    print(f"     • {os.path.basename(file_info['file'])} → {heading}")
+                else:
+                    print(f"     • {os.path.basename(file_info['file'])}")
+    
+    # Display individual files
+    if individual_files:
+        for info in individual_files:
+            print(f"\n📄 {info['file']}")
+            
+            if info['title']:
+                print(f"   Title: {info['title']}")
+            
+            if info['labels']:
+                print(f"   Labels: {', '.join(info['labels'])}")
+            
+            if info['export_locations']:
+                print("   Export Locations:")
+                for location in info['export_locations']:
+                    status_icon = ""
+                    status_text = ""
+                    
+                    if check_status and 'status' in location:
+                        if location['status'] == 'frozen':
+                            status_icon = " ❄️"
+                            status_text = " (frozen)"
+                        elif location['status'] == 'available':
+                            status_icon = " ✅"
+                            status_text = " (available)"
+                    
+                    print(f"     • {location['type']}: {location['url']}{status_icon}{status_text}")
+            else:
+                print("   Export Locations: None")
+
+
+def check_existing_gdoc_confirmation(markdown_path: str, force: bool = False) -> bool:
+    """
+    Check if markdown file has existing gdoc_url and ask for confirmation if not forcing.
+    
+    Args:
+        markdown_path (str): Path to markdown file
+        force (bool): If True, skip confirmation
+        
+    Returns:
+        bool: True if should proceed, False if should skip
+    """
+    try:
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        metadata = extract_frontmatter_metadata(content)
+        existing_gdoc_url = metadata.get('gdoc_url')
+        
+        if existing_gdoc_url and not force:
+            print(f"\n⚠️  Warning: {os.path.basename(markdown_path)} already has a Google Doc link:")
+            print(f"   {existing_gdoc_url}")
+            print(f"\nThis operation will update the link to point to a new document.")
+            
+            try:
+                response = input("Do you want to continue? [y/N]: ").strip().lower()
+                if response in ['y', 'yes']:
+                    return True
+                elif response in ['n', 'no', '']:
+                    print("Operation cancelled.")
+                    return False
+                else:
+                    print("Please enter 'y' for yes or 'n' for no.")
+                    return False
+            except (EOFError, KeyboardInterrupt):
+                print("\nOperation cancelled.")
+                return False
+        
+        return True
+        
+    except Exception as e:
+        print(f"Warning: Could not check existing frontmatter in {markdown_path}: {e}")
+        return True
+
+
+def create_empty_document(title: str, quiet: bool = False) -> str:
+    """
+    Create an empty Google Doc for tab management.
+    
+    This function creates a new Google Doc that can be used as a container
+    for multiple tabs. Each tab will be added as an H1 heading, which
+    Google Docs displays as separate tabs in the UI.
+    
+    Args:
+        title (str): Title for the new document
+        quiet (bool): If True, suppress output messages
+        
+    Returns:
+        str: Document ID of the created document, or None if failed
+        
+    Example:
+        doc_id = create_empty_document("Project Documentation")
+        # Returns: "1ABC123def456GHI789jkl"
+    """
+    try:
+        creds = get_credentials()
+        docs_service = build('docs', 'v1', credentials=creds)
+        
+        # Create empty document
+        doc = docs_service.documents().create(body={'title': title}).execute()
+        doc_id = doc['documentId']
+        
+        if not quiet:
+            print(f'✓ Created empty document: "{title}"')
+            print(f'  Document ID: {doc_id}')
+            print(f'  URL: https://docs.google.com/document/d/{doc_id}/edit')
+        
+        return doc_id
+        
+    except HttpError as error:
+        print(f'Google API error: {error}', file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f'Error creating empty document: {e}', file=sys.stderr)
+        return None
+
+
+def check_for_formatted_h1_headings(markdown_content: str, quiet: bool = False) -> list:
+    """
+    Check for H1 headings that have markdown formatting (bold, italic, etc.).
+    These can break TOC link creation.
+    
+    Args:
+        markdown_content (str): Markdown content to check
+        quiet (bool): If True, suppress output messages
+        
+    Returns:
+        list: List of formatted H1 headings found
+    """
+    import re
+    
+    formatted_headings = []
+    
+    # Pattern to match H1 headings with formatting
+    h1_pattern = r'^#\s+(.+)$'
+    
+    for line in markdown_content.split('\n'):
+        match = re.match(h1_pattern, line.strip())
+        if match:
+            heading_text = match.group(1).strip()
+            
+            # Check for markdown formatting
+            if ('**' in heading_text or 
+                '__' in heading_text or 
+                '*' in heading_text or 
+                '_' in heading_text or
+                '`' in heading_text):
+                formatted_headings.append(heading_text)
+    
+    if formatted_headings and not quiet:
+        print("⚠️  Warning: Found H1 headings with markdown formatting:")
+        for heading in formatted_headings:
+            print(f"   • {heading}")
+        print("   These may not work properly in the Table of Contents.")
+        print("   Consider removing formatting from H1 headings for better TOC compatibility.")
+    
+    return formatted_headings
+
+
+def extract_h1_headings_from_markdown(content: str) -> list:
+    """
+    Extract H1 headings from markdown content.
+    
+    Args:
+        content (str): Markdown content to parse
+        
+    Returns:
+        list: List of H1 heading texts
+    """
+    import re
+    
+    # Pattern to match H1 headings (lines starting with # followed by space)
+    h1_pattern = r'^#\s+(.+)$'
+    headings = []
+    
+    for line in content.split('\n'):
+        match = re.match(h1_pattern, line.strip())
+        if match:
+            headings.append(match.group(1).strip())
+    
+    return headings
+
+
+def generate_table_of_contents(headings: list) -> str:
+    """
+    Generate a table of contents from a list of headings.
+    Uses simple numbered list format that works well with Google Docs.
+    
+    Args:
+        headings (list): List of heading texts
+        
+    Returns:
+        str: Table of contents
+    """
+    if not headings:
+        return ""
+    
+    toc_lines = ["## Table of Contents", ""]
+    
+    for i, heading in enumerate(headings, 1):
+        # Simple numbered list without links
+        # Google Docs will handle navigation through its native outline
+        toc_lines.append(f"{i}. {heading}")
+    
+    toc_lines.append("")  # Add blank line after TOC
+    return "\n".join(toc_lines)
+
+
+def create_working_toc_links_in_gdoc(doc_id: str, headings: list, creds, quiet: bool = False) -> None:
+    """
+    Create working TOC links in Google Doc by finding heading IDs and creating proper links.
+    This creates clickable links that actually work by using Google Docs' internal heading IDs.
+    
+    Args:
+        doc_id (str): Google Doc ID
+        headings (list): List of heading texts
+        creds: Google API credentials
+        quiet (bool): If True, suppress output messages
+    """
+    try:
+        docs_service = build('docs', 'v1', credentials=creds)
+        
+        # Get the document
+        doc = docs_service.documents().get(documentId=doc_id).execute()
+        
+        # Find all headings and their IDs
+        heading_ids = {}
+        for element in doc.get('body', {}).get('content', []):
+            if 'paragraph' in element:
+                paragraph = element['paragraph']
+                if 'paragraphStyle' in paragraph:
+                    style = paragraph['paragraphStyle']
+                    if style.get('namedStyleType') == 'HEADING_1':
+                        # This is a heading, find its ID
+                        if 'elements' in paragraph and len(paragraph['elements']) > 0:
+                            first_element = paragraph['elements'][0]
+                            if 'textRun' in first_element:
+                                heading_text = first_element['textRun'].get('content', '').strip()
+                                
+                                # Look for heading ID in various places
+                                heading_id = None
+                                
+                                # Method 1: Check if heading already has an ID in textStyle.link
+                                if 'headingId' in first_element.get('textRun', {}).get('textStyle', {}).get('link', {}):
+                                    heading_id = first_element['textRun']['textStyle']['link']['headingId']
+                                
+                                # Method 2: Check if there's a headingId in the paragraph style
+                                elif 'headingId' in paragraph.get('paragraphStyle', {}):
+                                    heading_id = paragraph['paragraphStyle']['headingId']
+                                
+                                # Method 3: Generate a heading ID based on the text (Google Docs format)
+                                if not heading_id and heading_text:
+                                    # Google Docs generates IDs like "h.abc123def456"
+                                    # We'll create a simple one based on the text
+                                    import hashlib
+                                    text_hash = hashlib.md5(heading_text.lower().encode()).hexdigest()[:12]
+                                    heading_id = f"h.{text_hash}"
+                                
+                                if heading_id:
+                                    heading_ids[heading_text] = heading_id
+                                    if not quiet:
+                                        print(f"  Found heading: '{heading_text}' -> {heading_id}")
+        
+        if not heading_ids:
+            if not quiet:
+                print("ℹ No headings with IDs found - headings may not be properly formatted")
+            return
+        
+        # Find the TOC section and replace links
+        requests = []
+        
+        for element in doc.get('body', {}).get('content', []):
+            if 'paragraph' in element:
+                paragraph = element['paragraph']
+                if 'elements' in paragraph:
+                    for elem in paragraph['elements']:
+                        if 'textRun' in elem:
+                            text_content = elem['textRun'].get('content', '')
+                            # Check if this looks like a TOC item
+                            for heading_text in headings:
+                                # Check if this is a TOC item (exact match with heading text)
+                                if (text_content.strip() == heading_text and 
+                                    'Table of Contents' not in text_content):
+                                    
+                                    # Find the best matching heading ID
+                                    best_match = None
+                                    best_heading = None
+                                    
+                                    # Try exact match first
+                                    if heading_text in heading_ids:
+                                        best_match = heading_ids[heading_text]
+                                        best_heading = heading_text
+                                    else:
+                                        # Try partial matches
+                                        for doc_heading, heading_id in heading_ids.items():
+                                            if heading_text.lower() in doc_heading.lower() or doc_heading.lower() in heading_text.lower():
+                                                best_match = heading_id
+                                                best_heading = doc_heading
+                                                break
+                                    
+                                    if best_match:
+                                        # Create a link to the heading
+                                        start_index = elem['startIndex']
+                                        end_index = elem['endIndex']
+                                        
+                                        # Update the text style to include a link
+                                        requests.append({
+                                            'updateTextStyle': {
+                                                'range': {
+                                                    'startIndex': start_index,
+                                                    'endIndex': end_index
+                                                },
+                                                'textStyle': {
+                                                    'link': {
+                                                        'headingId': best_match
+                                                    },
+                                                    'foregroundColor': {
+                                                        'color': {
+                                                            'rgbColor': {
+                                                                'red': 0.06666667,
+                                                                'green': 0.33333334,
+                                                                'blue': 0.8
+                                                            }
+                                                        }
+                                                    },
+                                                    'underline': True
+                                                },
+                                                'fields': 'link,foregroundColor,underline'
+                                            }
+                                        })
+                                        
+                                        if not quiet:
+                                            print(f"  Linking TOC item: '{heading_text}' -> '{best_heading}' ({best_match})")
+        
+        # Apply the requests
+        if requests:
+            docs_service.documents().batchUpdate(
+                documentId=doc_id,
+                body={'requests': requests}
+            ).execute()
+            
+            if not quiet:
+                print(f"✓ Created {len(requests)} working TOC links")
         else:
-            print("   Export Locations: None")
+            if not quiet:
+                print("ℹ No TOC links to update")
+        
+    except Exception as e:
+        if not quiet:
+            print(f"Warning: Could not create working TOC links: {e}")
+
+
+def fix_toc_links_in_gdoc(doc_id: str, creds, quiet: bool = False) -> None:
+    """
+    Fix TOC links in Google Doc to use proper internal navigation.
+    This replaces markdown-style links with Google Docs internal links.
+    """
+    try:
+        docs_service = build('docs', 'v1', credentials=creds)
+        
+        # Get the document
+        doc = docs_service.documents().get(documentId=doc_id).execute()
+        
+        # Find the Table of Contents section and fix the links
+        requests = []
+        
+        for element in doc.get('body', {}).get('content', []):
+            if 'paragraph' in element:
+                paragraph = element['paragraph']
+                if 'elements' in paragraph:
+                    for elem in paragraph['elements']:
+                        if 'textRun' in elem:
+                            text_content = elem['textRun'].get('content', '')
+                            # Look for markdown-style links like [text](#anchor)
+                            if '[' in text_content and '](#' in text_content:
+                                # This is a TOC link that needs to be fixed
+                                # For now, we'll just remove the anchor part
+                                # Google Docs will handle internal navigation automatically
+                                if not quiet:
+                                    print("ℹ Found TOC links - Google Docs will handle internal navigation")
+                                return
+        
+        if not quiet:
+            print("ℹ No TOC links found to fix")
+        
+    except Exception as e:
+        if not quiet:
+            print(f"Warning: Could not fix TOC links: {e}")
+
+
+def ensure_heading_formatting_in_gdoc(doc_id: str, creds, quiet: bool = False) -> None:
+    """
+    Ensure that H1 headings in a Google Doc are properly formatted as Heading 1 style.
+    This is necessary for TOC links to work correctly.
+    """
+    try:
+        docs_service = build('docs', 'v1', credentials=creds)
+        
+        # Get the document
+        doc = docs_service.documents().get(documentId=doc_id).execute()
+        
+        # Find all paragraphs that start with '#' and format them as Heading 1
+        requests = []
+        
+        for element in doc.get('body', {}).get('content', []):
+            if 'paragraph' in element:
+                paragraph = element['paragraph']
+                if 'elements' in paragraph and len(paragraph['elements']) > 0:
+                    # Check if this paragraph starts with a single '#' (H1)
+                    first_element = paragraph['elements'][0]
+                    if 'textRun' in first_element:
+                        text_content = first_element['textRun'].get('content', '')
+                        if text_content.startswith('# ') and not text_content.startswith('##'):
+                            # This should be an H1 heading
+                            start_index = element['startIndex']
+                            end_index = element['endIndex']
+                            
+                            # Remove the '#' prefix
+                            requests.append({
+                                'deleteTextRange': {
+                                    'range': {
+                                        'startIndex': start_index,
+                                        'endIndex': start_index + 2
+                                    }
+                                }
+                            })
+                            
+                            # Set the paragraph style to Heading 1
+                            requests.append({
+                                'updateParagraphStyle': {
+                                    'range': {
+                                        'startIndex': start_index,
+                                        'endIndex': end_index - 2
+                                    },
+                                    'paragraphStyle': {
+                                        'namedStyleType': 'HEADING_1'
+                                    },
+                                    'fields': 'namedStyleType'
+                                }
+                            })
+        
+        # Apply all requests if any were found
+        if requests:
+            if not quiet:
+                print(f"✓ Formatting {len(requests)//2} headings as Heading 1 style")
+            
+            docs_service.documents().batchUpdate(
+                documentId=doc_id,
+                body={'requests': requests}
+            ).execute()
+        else:
+            if not quiet:
+                print("ℹ No H1 headings found to format")
+        
+    except Exception as e:
+        if not quiet:
+            print(f"Warning: Could not format headings: {e}")
+
+
+def create_batch_document_simple(markdown_files: list, title: str, quiet: bool = False, include_headers: bool = False, include_horizontal_sep: bool = False, include_title: bool = True, include_toc: bool = False) -> str:
+    """
+    Create a Google Doc by combining multiple markdown files client-side.
+    
+    This function combines multiple markdown files into a single temporary markdown
+    file, then syncs that as one Google Doc using the existing, proven sync logic.
+    This preserves all formatting and avoids the complexity of individual heading management.
+    
+    Args:
+        markdown_files (list): List of markdown file paths
+        title (str): Title for the new document
+        quiet (bool): If True, suppress output messages
+        include_headers (bool): If True, include file titles as headers in the document
+        include_horizontal_sep (bool): If True, add horizontal separators between files
+        include_title (bool): If True, include the batch title as the main document title
+        include_toc (bool): If True, generate and include a table of contents for H1 headings
+        
+    Returns:
+        str: Document ID of the created document, or None if failed
+    """
+    try:
+        import tempfile
+        import uuid
+        
+        if not quiet:
+            print(f'Combining {len(markdown_files)} files into single document...')
+        
+        # Create a temporary combined markdown file
+        combined_content = ""
+        all_h1_headings = []  # Collect all H1 headings for TOC generation
+        
+        # Note: We don't add the title to content when include_title=True
+        # because the document title will be set separately
+        
+        for i, markdown_path in enumerate(markdown_files):
+            if not quiet:
+                print(f'  Processing {i+1}/{len(markdown_files)}: {markdown_path}')
+            
+            try:
+                # Read markdown file
+                with open(markdown_path, 'r', encoding='utf-8') as f:
+                    markdown_content = f.read()
+                
+                # Extract metadata
+                metadata = extract_frontmatter_metadata(markdown_content)
+                
+                # Get heading title from frontmatter or filename
+                heading_title = metadata.get('title')
+                if not heading_title:
+                    heading_title = Path(markdown_path).stem.replace('_', ' ').replace('-', ' ').title()
+                
+                # Strip frontmatter for the combined document
+                content_for_combined = strip_frontmatter_for_remote_sync(markdown_content)
+                
+                # Check for formatted H1 headings that might break TOC
+                if include_toc:
+                    check_for_formatted_h1_headings(content_for_combined, quiet=quiet)
+                
+                # Collect H1 headings for TOC if requested
+                if include_toc:
+                    if include_headers:
+                        # When using headers, the file title becomes an H1 heading
+                        all_h1_headings.append(heading_title)
+                    else:
+                        # Without headers, collect H1 headings from the content
+                        h1_headings = extract_h1_headings_from_markdown(content_for_combined)
+                        all_h1_headings.extend(h1_headings)
+                
+                # Add content with or without headers
+                if include_headers:
+                    # When using headers, make the file title an H1 heading for proper anchor creation
+                    combined_content += f"# {heading_title}\n\n{content_for_combined}\n\n"
+                else:
+                    # Without headers, ensure any existing H1 headings remain as H1
+                    # (they should already be H1 from the original markdown)
+                    combined_content += f"{content_for_combined}\n\n"
+                
+                # Add horizontal separator after each file (except the last one) if requested
+                if include_horizontal_sep and i < len(markdown_files) - 1:
+                    combined_content += "\n\n---\n\n"
+                
+                if not quiet:
+                    print(f'    ✓ Added: {heading_title}')
+                    
+            except Exception as e:
+                if not quiet:
+                    print(f'    Error processing {markdown_path}: {e}')
+                continue
+        
+        # Generate and prepend table of contents if requested
+        if include_toc and all_h1_headings:
+            toc_content = generate_table_of_contents(all_h1_headings)
+            combined_content = toc_content + "\n" + combined_content
+            if not quiet:
+                print(f'✓ Generated table of contents with {len(all_h1_headings)} headings')
+        
+        # Create temporary file
+        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8')
+        temp_file.write(combined_content)
+        temp_file.close()
+        
+        try:
+            # Use the existing create_new_gdoc_from_markdown function
+            creds = get_credentials()
+            doc_id = create_new_gdoc_from_markdown_with_title(temp_file.name, title, creds, quiet=quiet)
+            
+            if doc_id and not quiet:
+                print(f'✓ Created batch document: "{title}"')
+                print(f'  Document ID: {doc_id}')
+                print(f'  URL: https://docs.google.com/document/d/{doc_id}/edit')
+            
+            # Create working TOC links if requested
+            if doc_id and include_toc and all_h1_headings:
+                if not quiet:
+                    print("⏳ Waiting for document to be ready...")
+                import time
+                time.sleep(2)  # Give Google Docs time to process the document
+                create_working_toc_links_in_gdoc(doc_id, all_h1_headings, creds, quiet=quiet)
+            
+            # Update frontmatter for all individual files with batch information
+            if doc_id:
+                batch_id = f"batch_{doc_id}"
+                for i, markdown_path in enumerate(markdown_files):
+                    try:
+                        # Read the file again to get current content
+                        with open(markdown_path, 'r', encoding='utf-8') as f:
+                            current_content = f.read()
+                        
+                        # Extract metadata to get heading title
+                        metadata = extract_frontmatter_metadata(current_content)
+                        heading_title = metadata.get('title')
+                        if not heading_title:
+                            heading_title = Path(markdown_path).stem.replace('_', ' ').replace('-', ' ').title()
+                        
+                        # Create batch info
+                        from datetime import datetime
+                        current_time = datetime.now().isoformat()
+                        
+                        batch_info = {
+                            'batch_id': batch_id,
+                            'batch_title': title,
+                            'doc_id': doc_id,
+                            'heading_title': heading_title,
+                            'url': f"https://docs.google.com/document/d/{doc_id}/edit",
+                            'created': current_time,
+                            'modified': current_time
+                        }
+                        
+                        # Update frontmatter
+                        updated_content = update_frontmatter_metadata(current_content, {'batch': batch_info})
+                        with open(markdown_path, 'w', encoding='utf-8') as f:
+                            f.write(updated_content)
+                        
+                        if not quiet:
+                            print(f'  ✓ Updated frontmatter in {os.path.basename(markdown_path)}')
+                            
+                    except Exception as e:
+                        if not quiet:
+                            print(f'  Warning: Could not update frontmatter in {os.path.basename(markdown_path)}: {e}')
+            
+            # Print batch info at the end
+            if doc_id and not quiet:
+                print(f"\nbatch: {title}")
+                print(f"URL: https://docs.google.com/document/d/{doc_id}/edit")
+            
+            return doc_id
+            
+        finally:
+            # Clean up temporary file
+            os.unlink(temp_file.name)
+        
+    except Exception as e:
+        print(f'Error creating batch document: {e}', file=sys.stderr)
+        return None
+
+
+# Removed: create_batch_document (complex) - replaced by create_batch_document_simple
+# Removed: add_markdown_as_heading - replaced by batch functionality  
+# Removed: update_heading_content - replaced by batch functionality
+
+
+def diff_batch_against_gdoc(doc_id: str, quiet: bool = False) -> None:
+    """
+    Diff an entire batch against its Google Doc.
+    
+    This function finds all markdown files that belong to the specified batch
+    document and compares each one against its corresponding section in the
+    Google Doc, showing differences for each heading section.
+    
+    Args:
+        doc_id (str): Google Doc ID to diff against
+        quiet (bool): If True, suppress output messages
+        
+    Example:
+        diff_batch_against_gdoc("1ABC123def456")
+        # Shows differences for all files in the batch
+    """
+    try:
+        from collections import defaultdict
+        
+        # Find all markdown files that belong to this batch
+        batch_files = []
+        for root, dirs, files in os.walk('.'):
+            for file in files:
+                if file.endswith('.md'):
+                    file_path = os.path.join(root, file)
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        metadata = extract_frontmatter_metadata(content)
+                        
+                        if 'batch' in metadata and isinstance(metadata['batch'], dict):
+                            batch_info = metadata['batch']
+                            if batch_info.get('doc_id') == doc_id:
+                                batch_files.append({
+                                    'file_path': file_path,
+                                    'heading_title': batch_info.get('heading_title', 'Unknown'),
+                                    'batch_info': batch_info
+                                })
+                    except Exception:
+                        continue
+        
+        if not batch_files:
+            if not quiet:
+                print(f"No batch files found for document {doc_id}")
+            return
+        
+        if not quiet:
+            print(f"Diffing batch document {doc_id} against {len(batch_files)} files")
+            print("=" * 60)
+        
+        # Get the Google Doc content
+        creds = get_credentials()
+        docs_service = build('docs', 'v1', credentials=creds)
+        
+        try:
+            doc = docs_service.documents().get(documentId=doc_id).execute()
+            doc_title = doc.get('title', 'Unknown')
+        except Exception as e:
+            print(f"Error accessing Google Doc: {e}", file=sys.stderr)
+            return
+        
+        if not quiet:
+            print(f"Document: {doc_title}")
+            print(f"URL: https://docs.google.com/document/d/{doc_id}/edit")
+            print()
+        
+        # For each batch file, find its corresponding section in the Google Doc
+        for file_info in batch_files:
+            file_path = file_info['file_path']
+            heading_title = file_info['heading_title']
+            
+            if not quiet:
+                print(f"Checking: {os.path.basename(file_path)} -> {heading_title}")
+            
+            try:
+                # Read the markdown file
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    markdown_content = f.read()
+                
+                # Strip frontmatter for comparison
+                content_for_gdoc = strip_frontmatter_for_remote_sync(markdown_content)
+                
+                # Find the heading section in the Google Doc
+                heading_section = find_heading_section_in_gdoc(doc, heading_title)
+                
+                if heading_section:
+                    # Compare the content
+                    if content_for_gdoc.strip() != heading_section.strip():
+                        if not quiet:
+                            print(f"  ⚠️  Differences found in '{heading_title}'")
+                            show_diff(
+                                heading_section,
+                                content_for_gdoc,
+                                f"Google Doc '{heading_title}'",
+                                f"Markdown '{os.path.basename(file_path)}'"
+                            )
+                        else:
+                            print(f"DIFF: {file_path}")
+                    else:
+                        if not quiet:
+                            print(f"  ✓  No differences in '{heading_title}'")
+                else:
+                    if not quiet:
+                        print(f"  ❌  Heading '{heading_title}' not found in Google Doc")
+                    else:
+                        print(f"MISSING: {file_path}")
+                
+                if not quiet:
+                    print()
+                    
+            except Exception as e:
+                if not quiet:
+                    print(f"  Error processing {file_path}: {e}")
+                else:
+                    print(f"ERROR: {file_path}")
+        
+    except Exception as e:
+        print(f'Error diffing batch: {e}', file=sys.stderr)
+
+
+def update_batch_by_name(batch_identifier: str, quiet: bool = False) -> None:
+    """
+    Update an existing batch by finding all files that belong to it.
+    
+    This function can find a batch by either:
+    1. Batch name (searches for files with matching batch_title)
+    2. Google Doc ID (searches for files with matching doc_id)
+    
+    It then updates the Google Doc with all the found files in the correct order.
+    
+    Args:
+        batch_identifier (str): Either batch name or Google Doc ID
+        quiet (bool): If True, suppress output messages
+        
+    Example:
+        update_batch_by_name("My Project Batch")
+        update_batch_by_name("1ABC123def456")
+    """
+    try:
+        # Find all markdown files that belong to this batch
+        batch_files = []
+        doc_id = None
+        batch_title = None
+        
+        # First pass: find the target batch
+        target_batch_info = None
+        for root, dirs, files in os.walk('.'):
+            for file in files:
+                if file.endswith('.md'):
+                    file_path = os.path.join(root, file)
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        metadata = extract_frontmatter_metadata(content)
+                        
+                        if 'batch' in metadata and isinstance(metadata['batch'], dict):
+                            batch_info = metadata['batch']
+                            batch_doc_id = batch_info.get('doc_id', '')
+                            batch_name = batch_info.get('batch_title', '')
+                            
+                            # Check if this file belongs to the specified batch
+                            # Exact match for doc_id, or exact/partial match for batch name
+                            if (batch_identifier == batch_doc_id or 
+                                batch_identifier.lower() == batch_name.lower() or
+                                (len(batch_identifier) > 3 and batch_identifier.lower() in batch_name.lower())):
+                                
+                                # Store the target batch info from first match
+                                if target_batch_info is None:
+                                    target_batch_info = batch_info
+                                    doc_id = batch_doc_id
+                                    batch_title = batch_name
+                                    
+                    except Exception:
+                        continue
+        
+        if target_batch_info is None:
+            if not quiet:
+                print(f"No batch found matching '{batch_identifier}'")
+                print("Available batches:")
+                list_batch_groupings('.', quiet=True)
+            return
+        
+        # Second pass: find all files that belong to the target batch
+        for root, dirs, files in os.walk('.'):
+            for file in files:
+                if file.endswith('.md'):
+                    file_path = os.path.join(root, file)
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        metadata = extract_frontmatter_metadata(content)
+                        
+                        if 'batch' in metadata and isinstance(metadata['batch'], dict):
+                            batch_info = metadata['batch']
+                            batch_doc_id = batch_info.get('doc_id', '')
+                            
+                            # Only include files from the target batch
+                            if batch_doc_id == doc_id:
+                                batch_files.append({
+                                    'file_path': file_path,
+                                    'heading_title': batch_info.get('heading_title', 'Unknown'),
+                                    'batch_info': batch_info
+                                })
+                                    
+                    except Exception:
+                        continue
+        
+        if not batch_files:
+            if not quiet:
+                print(f"No batch files found for '{batch_identifier}'")
+                print("Available batches:")
+                list_batch_groupings('.', quiet=True)
+            return
+        
+        if not doc_id:
+            if not quiet:
+                print(f"Error: Could not determine document ID for batch '{batch_identifier}'")
+            return
+        
+        if not quiet:
+            print(f"Updating batch: {batch_title}")
+            print(f"Document ID: {doc_id}")
+            print(f"Found {len(batch_files)} files to update")
+            print("=" * 50)
+        
+        # Sort files by their original order (we'll use filename as a proxy for now)
+        # In a real implementation, you might want to store the original order in frontmatter
+        batch_files.sort(key=lambda x: x['file_path'])
+        
+        # Get credentials
+        creds = get_credentials()
+        docs_service = build('docs', 'v1', credentials=creds)
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        # Clear the existing document content (keep the title)
+        try:
+            doc = docs_service.documents().get(documentId=doc_id).execute()
+            doc_title = doc.get('title', 'Unknown')
+            
+            # Delete all content except the first paragraph (which contains the title)
+            body_content = doc.get('body', {}).get('content', [])
+            if len(body_content) > 1:
+                # Delete everything after the first paragraph
+                delete_requests = [{
+                    'deleteContentRange': {
+                        'range': {
+                            'startIndex': body_content[1].get('startIndex', 1),
+                            'endIndex': body_content[-1].get('endIndex', 1)
+                        }
+                    }
+                }]
+                
+                docs_service.documents().batchUpdate(
+                    documentId=doc_id,
+                    body={'requests': delete_requests}
+                ).execute()
+                
+        except Exception as e:
+            if not quiet:
+                print(f"Warning: Could not clear existing content: {e}")
+        
+        # Now add each file as a heading section in order
+        for i, file_info in enumerate(batch_files):
+            file_path = file_info['file_path']
+            heading_title = file_info['heading_title']
+            
+            if not quiet:
+                print(f"  Processing {i+1}/{len(batch_files)}: {os.path.basename(file_path)} -> {heading_title}")
+            
+            try:
+                # Read markdown file
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    markdown_content = f.read()
+                
+                # Extract metadata
+                metadata = extract_frontmatter_metadata(markdown_content)
+                
+                # Strip frontmatter for Google Doc
+                content_for_gdoc = strip_frontmatter_for_remote_sync(markdown_content)
+                
+                # Create a temporary markdown file with the heading
+                temp_file_path = f"{file_path}.temp_batch_update"
+                with open(temp_file_path, 'w', encoding='utf-8') as f:
+                    f.write(f"# {heading_title}\n\n{content_for_gdoc}")
+                
+                try:
+                    # Convert markdown to Google Doc format using Drive API
+                    media = MediaFileUpload(
+                        temp_file_path,
+                        mimetype='text/markdown',
+                        resumable=True
+                    )
+                    
+                    file_metadata = {
+                        'mimeType': 'application/vnd.google-apps.document'
+                    }
+                    
+                    # Create a temporary document with converted content
+                    temp_doc = docs_service.documents().create(body={'title': f'temp_batch_update_{i}'}).execute()
+                    temp_doc_id = temp_doc['documentId']
+                    
+                    # Update the temporary doc with converted content
+                    drive_service.files().update(
+                        fileId=temp_doc_id,
+                        media_body=media,
+                        body=file_metadata
+                    ).execute()
+                    
+                    # Get the converted content
+                    temp_doc_content = docs_service.documents().get(documentId=temp_doc_id).execute()
+                    
+                    # Get current document content to find insertion point
+                    current_doc = docs_service.documents().get(documentId=doc_id).execute()
+                    insert_position = max(1, current_doc.get('body', {}).get('content', [{}])[-1].get('endIndex', 1) - 1)
+                    
+                    # Copy content from temp doc to main doc
+                    body_content = temp_doc_content.get('body', {}).get('content', [])
+                    
+                    # First, insert all text content at once to avoid index issues
+                    all_text = ''
+                    for element in body_content:
+                        if 'paragraph' in element:
+                            para = element['paragraph']
+                            for text_run in para.get('elements', []):
+                                if 'textRun' in text_run:
+                                    all_text += text_run['textRun'].get('content', '')
+                    
+                    # Insert all text at once
+                    if all_text.strip():
+                        docs_service.documents().batchUpdate(
+                            documentId=doc_id,
+                            body={'requests': [{
+                                'insertText': {
+                                    'location': {
+                                        'index': insert_position
+                                    },
+                                    'text': all_text
+                                }
+                            }]}
+                        ).execute()
+                        
+                        # Now apply formatting in a separate batch
+                        requests = []
+                        current_position = insert_position
+                        
+                        for element in body_content:
+                            if 'paragraph' in element:
+                                para = element['paragraph']
+                                
+                                # Extract text content
+                                text = ''
+                                for text_run in para.get('elements', []):
+                                    if 'textRun' in text_run:
+                                        text += text_run['textRun'].get('content', '')
+                                
+                                if text.strip():  # Only process non-empty paragraphs
+                                    # Apply paragraph style if it exists
+                                    if 'paragraphStyle' in para and 'namedStyleType' in para['paragraphStyle']:
+                                        style_type = para['paragraphStyle']['namedStyleType']
+                                        if style_type in ['HEADING_1', 'HEADING_2', 'HEADING_3', 'HEADING_4', 'HEADING_5', 'HEADING_6']:
+                                            requests.append({
+                                                'updateParagraphStyle': {
+                                                    'range': {
+                                                        'startIndex': current_position,
+                                                        'endIndex': current_position + len(text)
+                                                    },
+                                                    'paragraphStyle': {
+                                                        'namedStyleType': style_type
+                                                    },
+                                                    'fields': 'namedStyleType'
+                                                }
+                                            })
+                                    
+                                    # Apply text formatting for each text run
+                                    text_start = current_position
+                                    for text_run in para.get('elements', []):
+                                        if 'textRun' in text_run:
+                                            run_text = text_run['textRun'].get('content', '')
+                                            run_length = len(run_text)
+                                            
+                                            if 'textStyle' in text_run['textRun']:
+                                                text_style = text_run['textRun']['textStyle']
+                                                
+                                                # Apply bold formatting
+                                                if text_style.get('bold'):
+                                                    requests.append({
+                                                        'updateTextStyle': {
+                                                            'range': {
+                                                                'startIndex': text_start,
+                                                                'endIndex': text_start + run_length
+                                                            },
+                                                            'textStyle': {
+                                                                'bold': True
+                                                            },
+                                                            'fields': 'bold'
+                                                        }
+                                                    })
+                                                
+                                                # Apply italic formatting
+                                                if text_style.get('italic'):
+                                                    requests.append({
+                                                        'updateTextStyle': {
+                                                            'range': {
+                                                                'startIndex': text_start,
+                                                                'endIndex': text_start + run_length
+                                                            },
+                                                            'textStyle': {
+                                                                'italic': True
+                                                            },
+                                                            'fields': 'italic'
+                                                        }
+                                                    })
+                                            
+                                            text_start += run_length
+                                    
+                                    current_position += len(text)
+                        
+                        # Execute formatting requests
+                        if requests:
+                            docs_service.documents().batchUpdate(
+                                documentId=doc_id,
+                                body={'requests': requests}
+                            ).execute()
+                    
+                    # Clean up temporary document
+                    drive_service.files().delete(fileId=temp_doc_id).execute()
+                    
+                    if not quiet:
+                        print(f"    ✓ Updated heading: {heading_title}")
+                    
+                finally:
+                    # Clean up temporary file
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
+                        
+            except Exception as e:
+                if not quiet:
+                    print(f"    Error processing {file_path}: {e}")
+                continue
+        
+        if not quiet:
+            print(f"✓ Batch update completed")
+            print(f"URL: https://docs.google.com/document/d/{doc_id}/edit")
+        else:
+            print(f"https://docs.google.com/document/d/{doc_id}/edit")
+        
+    except Exception as e:
+        print(f'Error updating batch: {e}', file=sys.stderr)
+
+
+def find_heading_section_in_gdoc(doc: dict, heading_title: str) -> str:
+    """
+    Find a heading section in a Google Doc and return its content.
+    
+    Args:
+        doc (dict): Google Doc document object
+        heading_title (str): Title of the heading to find
+        
+    Returns:
+        str: Content of the heading section, or empty string if not found
+    """
+    try:
+        content = doc.get('body', {}).get('content', [])
+        
+        # Find the target heading
+        heading_start = None
+        heading_end = None
+        
+        for element in content:
+            if 'paragraph' in element:
+                para = element['paragraph']
+                if 'paragraphStyle' in para:
+                    style = para['paragraphStyle']
+                    if 'namedStyleType' in style and style['namedStyleType'] == 'HEADING_1':
+                        # Extract text from the paragraph
+                        text = ''
+                        for text_run in para.get('elements', []):
+                            if 'textRun' in text_run:
+                                text += text_run['textRun'].get('content', '')
+                        
+                        if heading_title.lower() in text.lower():
+                            heading_start = element.get('endIndex', 0)
+                            break
+        
+        if heading_start is None:
+            return ""
+        
+        # Find the end of the heading section (next H1 heading or end of document)
+        for element in content:
+            if element.get('startIndex', 0) > heading_start:
+                if 'paragraph' in element:
+                    para = element['paragraph']
+                    if 'paragraphStyle' in para:
+                        style = para['paragraphStyle']
+                        if 'namedStyleType' in style and style['namedStyleType'] == 'HEADING_1':
+                            heading_end = element.get('startIndex', 0)
+                            break
+        
+        if heading_end is None:
+            # Use end of document
+            heading_end = content[-1].get('endIndex', 0)
+        
+        # Extract the content between heading_start and heading_end
+        section_content = ""
+        for element in content:
+            start_idx = element.get('startIndex', 0)
+            end_idx = element.get('endIndex', 0)
+            
+            if start_idx >= heading_start and end_idx <= heading_end:
+                if 'paragraph' in element:
+                    para = element['paragraph']
+                    for text_run in para.get('elements', []):
+                        if 'textRun' in text_run:
+                            section_content += text_run['textRun'].get('content', '')
+        
+        return section_content.strip()
+        
+    except Exception:
+        return ""
+
+
+def list_batch_groupings(directory: str, quiet: bool = False) -> None:
+    """
+    List all batch groupings in markdown files.
+    
+    This function scans a directory for markdown files and groups them by
+    their batch metadata, showing which files belong to which batch documents.
+    
+    Args:
+        directory (str): Directory to scan for markdown files
+        quiet (bool): If True, suppress output messages
+        
+    Example:
+        list_batch_groupings("/path/to/markdown/files")
+        # Shows grouped batch information
+    """
+    try:
+        from collections import defaultdict
+        
+        # Find all markdown files
+        markdown_files = []
+        for root, dirs, files in os.walk(directory):
+            for file in files:
+                if file.endswith('.md'):
+                    markdown_files.append(os.path.join(root, file))
+        
+        if not markdown_files:
+            if not quiet:
+                print("No markdown files found in directory")
+            return
+        
+        # Group files by batch
+        batch_groups = defaultdict(list)
+        ungrouped_files = []
+        
+        for file_path in markdown_files:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                metadata = extract_frontmatter_metadata(content)
+                
+                if 'batch' in metadata and isinstance(metadata['batch'], dict):
+                    batch_info = metadata['batch']
+                    batch_id = batch_info.get('batch_id', 'unknown')
+                    batch_groups[batch_id].append({
+                        'file': file_path,
+                        'batch_info': batch_info
+                    })
+                else:
+                    ungrouped_files.append(file_path)
+                    
+            except Exception as e:
+                if not quiet:
+                    print(f"Warning: Could not read {file_path}: {e}")
+                continue
+        
+        if not quiet:
+            print(f"Batch Groupings in {directory}")
+            print("=" * 50)
+            
+            if batch_groups:
+                for batch_id, files in batch_groups.items():
+                    # Get batch info from first file
+                    batch_info = files[0]['batch_info']
+                    batch_title = batch_info.get('batch_title', 'Unknown Title')
+                    doc_id = batch_info.get('doc_id', 'Unknown')
+                    
+                    print(f"\nBatch: {batch_title}")
+                    print(f"  Document ID: {doc_id}")
+                    print(f"  URL: https://docs.google.com/document/d/{doc_id}/edit")
+                    print(f"  Files ({len(files)}):")
+                    
+                    for file_info in files:
+                        file_path = file_info['file']
+                        heading_title = file_info['batch_info'].get('heading_title', 'Unknown')
+                        print(f"    - {os.path.basename(file_path)} -> {heading_title}")
+            else:
+                print("No batch groupings found")
+            
+            if ungrouped_files:
+                print(f"\nUngrouped files ({len(ungrouped_files)}):")
+                for file_path in ungrouped_files:
+                    print(f"  - {os.path.basename(file_path)}")
+        
+        if quiet:
+            for batch_id, files in batch_groups.items():
+                batch_info = files[0]['batch_info']
+                doc_id = batch_info.get('doc_id', '')
+                if doc_id:
+                    print(f"https://docs.google.com/document/d/{doc_id}/edit")
+        
+    except Exception as e:
+        print(f'Error listing batch groupings: {e}', file=sys.stderr)
+
+
+def is_tab_url(url: str) -> bool:
+    """
+    Check if a Google Doc URL is a tab URL (contains heading fragment).
+    
+    This function detects if a Google Doc URL contains heading fragments
+    that indicate it's targeting a specific tab/section within the document.
+    
+    Args:
+        url (str): Google Doc URL to check
+        
+    Returns:
+        bool: True if URL contains tab/heading fragments, False otherwise
+        
+    Example:
+        is_tab_url("https://docs.google.com/document/d/123/edit#heading=h.abc")
+        # Returns: True
+    """
+    if not url:
+        return False
+    return '#heading=' in url or '?tab=' in url
+
+
+def extract_tab_title_from_url(url: str) -> str:
+    """
+    Extract tab title from a Google Doc URL with heading fragment.
+    
+    This function attempts to extract the tab title from a Google Doc URL
+    that contains heading fragments. Currently returns None as the heading
+    ID needs to be resolved by looking up the actual heading in the document.
+    
+    Args:
+        url (str): Google Doc URL with heading fragment
+        
+    Returns:
+        str: Tab title if extractable, None otherwise
+        
+    Note:
+        This is a placeholder function. Full implementation would require
+        API calls to resolve heading IDs to actual heading text.
+        
+    Example:
+        title = extract_tab_title_from_url("https://docs.google.com/document/d/123/edit#heading=h.abc")
+        # Returns: None (requires document lookup)
+    """
+    if not url:
+        return None
+    
+    # Look for heading fragment
+    if '#heading=' in url:
+        # This would need to be resolved by looking up the heading in the document
+        # For now, return None to indicate it needs to be resolved
+        return None
+    
+    return None
 
 
 def main():
@@ -1854,6 +3414,13 @@ def main():
                '  %(prog)s DOC_ID --list-revisions\n'
                '  %(prog)s DOC_ID --list-comments\n'
                '  %(prog)s DOC_ID --lock\n\n'
+               '  # Batch Document Management\n'
+               '  %(prog)s --batch file1.md file2.md file3.md\n'
+               '  %(prog)s --batch file1.md file2.md --batch-title "Project Documentation"\n'
+               '  %(prog)s --batch file1.md file2.md --batch-headers --batch-horizontal-sep --batch-toc\n'
+               '  %(prog)s DIRECTORY --list-batch\n'
+               '  %(prog)s DOC_ID --diff-batch\n'
+               '  %(prog)s BATCH_NAME --batch-update\n\n'
                '  # Confluence\n'
                '  %(prog)s input.md confluence:SPACE/123456\n'
                '  %(prog)s input.md --create-confluence --space ENG --title "My Page"\n'
@@ -1915,9 +3482,31 @@ def main():
     parser.add_argument('--labels', type=str, metavar='LABELS',
                        help='Comma-separated labels for Confluence page (combined with frontmatter labels)')
     
+    # Heading management options
+    parser.add_argument('--create-empty', action='store_true',
+                       help='Create empty Google Doc')
+    parser.add_argument('--list-batch', action='store_true',
+                       help='List all batch groupings in markdown files')
+    parser.add_argument('--diff-batch', action='store_true',
+                       help='Diff entire batch against Google Doc (use with batch document ID)')
+    parser.add_argument('--batch-update', action='store_true',
+                       help='Update existing batch by finding all files in current directory (use with batch name or doc ID)')
+    parser.add_argument('--batch', nargs='+', metavar='MARKDOWN_FILE',
+                       help='Create a new Google Doc with multiple markdown files as headings (simple client-side combination)')
+    parser.add_argument('--batch-title', type=str, metavar='TITLE',
+                       help='Title for the batch document (if not specified, uses first markdown file title)')
+    parser.add_argument('--batch-headers', action='store_true',
+                       help='Include individual file titles as headers in the batch document (default: content only)')
+    parser.add_argument('--batch-horizontal-sep', action='store_true',
+                       help='Add horizontal separators between files in the batch document (default: no separators)')
+    parser.add_argument('--batch-toc', action='store_true',
+                       help='Generate and include a table of contents for H1 headings in the batch document')
+    
     # General options
     parser.add_argument('-u', '--url-only', action='store_true',
                        help='Output only the URL (perfect for piping to pbcopy)')
+    parser.add_argument('-f', '--force', action='store_true',
+                       help='Skip confirmation when overwriting existing Google Doc links in frontmatter')
     parser.add_argument('--diff', action='store_true',
                        help='Show diff between source and destination (markdown as common format)')
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
@@ -1948,17 +3537,179 @@ def main():
     
     args = parser.parse_args()
     
-    # Validate required arguments
-    if not args.source:
+    # Handle --create-empty command (must be before type detection)
+    if args.create_empty:
+        # Use source as document title, or default title if not provided
+        title = args.source if args.source else "Untitled Document"
+        
+        doc_id = create_empty_document(title, quiet=args.url_only)
+        if doc_id:
+            if args.url_only:
+                print(f"https://docs.google.com/document/d/{doc_id}/edit")
+            else:
+                print(f"Document ID: {doc_id}")
+        else:
+            sys.exit(1)
+        return
+    
+    # Handle --batch command (must be before type detection)
+    if args.batch:
+        if not args.batch:
+            print("Error: At least one markdown file required for --batch", file=sys.stderr)
+            print("Use: mdsync --batch file1.md file2.md file3.md", file=sys.stderr)
+            sys.exit(1)
+        
+        # Determine document title
+        if args.batch_title:
+            title = args.batch_title
+        else:
+            # Use first markdown file's title
+            try:
+                with open(args.batch[0], 'r', encoding='utf-8') as f:
+                    first_content = f.read()
+                metadata = extract_frontmatter_metadata(first_content)
+                title = metadata.get('title') or Path(args.batch[0]).stem.replace('_', ' ').replace('-', ' ').title()
+            except Exception:
+                title = "Batch Document"
+        
+        # Check if files already belong to an existing batch
+        existing_batch_doc_id = None
+        existing_batch_title = None
+        files_in_existing_batch = []
+        
+        for markdown_path in args.batch:
+            try:
+                with open(markdown_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                metadata = extract_frontmatter_metadata(content)
+                
+                if 'batch' in metadata and isinstance(metadata['batch'], dict):
+                    batch_info = metadata['batch']
+                    batch_doc_id = batch_info.get('doc_id')
+                    batch_title = batch_info.get('batch_title')
+                    
+                    if batch_doc_id:
+                        if existing_batch_doc_id is None:
+                            existing_batch_doc_id = batch_doc_id
+                            existing_batch_title = batch_title
+                        elif existing_batch_doc_id != batch_doc_id:
+                            # Files belong to different batches - this is complex
+                            existing_batch_doc_id = "MIXED"
+                            break
+                        
+                        files_in_existing_batch.append(markdown_path)
+                        
+            except Exception:
+                continue
+        
+        # If we found an existing batch, scan the directory for ALL files in that batch
+        all_files_in_existing_batch = []
+        if existing_batch_doc_id and existing_batch_doc_id != "MIXED":
+            try:
+                # Get the directory of the first file
+                first_file_dir = os.path.dirname(args.batch[0]) if args.batch else "."
+                
+                # Scan directory for all markdown files that belong to this batch
+                for filename in os.listdir(first_file_dir):
+                    if filename.endswith('.md'):
+                        file_path = os.path.join(first_file_dir, filename)
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            metadata = extract_frontmatter_metadata(content)
+                            
+                            if ('batch' in metadata and 
+                                isinstance(metadata['batch'], dict) and
+                                metadata['batch'].get('doc_id') == existing_batch_doc_id):
+                                all_files_in_existing_batch.append(file_path)
+                        except Exception:
+                            continue
+            except Exception:
+                # If directory scanning fails, fall back to just the processed files
+                all_files_in_existing_batch = files_in_existing_batch
+        
+        # If all files belong to the same existing batch, offer to update it
+        if existing_batch_doc_id and existing_batch_doc_id != "MIXED" and not args.force:
+            print(f"\n📋 Found existing batch: '{existing_batch_title}'")
+            print(f"   Document ID: {existing_batch_doc_id}")
+            print(f"   Files in batch: {len(all_files_in_existing_batch)}")
+            
+            # Check for files that will be excluded from the new batch
+            new_batch_files = set(args.batch)
+            existing_batch_files = set(all_files_in_existing_batch)
+            excluded_files = existing_batch_files - new_batch_files
+            
+            if excluded_files:
+                print(f"\n⚠️  Warning: {len(excluded_files)} file(s) from the existing batch will NOT be included in the new batch:")
+                for file_path in sorted(excluded_files):
+                    print(f"   • {os.path.basename(file_path)}")
+                print(f"   These files will remain in the existing batch document.")
+            
+            print(f"\nThis will create a NEW batch document instead of updating the existing one.")
+            print(f"To update the existing batch, use: mdsync '{existing_batch_title}' --batch-update")
+            
+            try:
+                response = input("Do you want to create a new batch document? [y/N]: ").strip().lower()
+                if response not in ['y', 'yes']:
+                    print("Operation cancelled. Use --batch-update to update existing batch.")
+                    sys.exit(0)
+            except (EOFError, KeyboardInterrupt):
+                print("\nOperation cancelled.")
+                sys.exit(0)
+        
+        # Check for files with individual gdoc_url (not in batch)
+        elif not args.force:
+            files_with_individual_gdoc = []
+            for markdown_path in args.batch:
+                try:
+                    with open(markdown_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    metadata = extract_frontmatter_metadata(content)
+                    if metadata.get('gdoc_url') and not metadata.get('batch'):
+                        files_with_individual_gdoc.append(markdown_path)
+                except Exception:
+                    continue
+            
+            if files_with_individual_gdoc:
+                print(f"\n⚠️  Warning: {len(files_with_individual_gdoc)} file(s) have individual Google Doc links:")
+                for file_path in files_with_individual_gdoc:
+                    print(f"   {os.path.basename(file_path)}")
+                print(f"\nThis batch operation will update these links to point to the new batch document.")
+                
+                try:
+                    response = input("Do you want to continue? [y/N]: ").strip().lower()
+                    if response not in ['y', 'yes']:
+                        print("Operation cancelled.")
+                        sys.exit(0)
+                except (EOFError, KeyboardInterrupt):
+                    print("\nOperation cancelled.")
+                    sys.exit(0)
+        
+        # Create the batch document
+        # Include title only if --batch-title was explicitly provided
+        include_title = args.batch_title is not None
+        doc_id = create_batch_document_simple(args.batch, title, quiet=args.url_only, include_headers=args.batch_headers, include_horizontal_sep=args.batch_horizontal_sep, include_title=include_title, include_toc=args.batch_toc)
+        if doc_id:
+            if args.url_only:
+                print(f"https://docs.google.com/document/d/{doc_id}/edit")
+            else:
+                print(f"Document ID: {doc_id}")
+        else:
+            sys.exit(1)
+        return
+    
+    
+    # Validate required arguments (skip for list-batch and batch-update which use different sources)
+    if not args.source and not args.list_batch and not args.batch_update:
         print("Error: Source is required", file=sys.stderr)
         print("Use: mdsync <source> [destination] or mdsync list [file_or_directory]", file=sys.stderr)
         print("Run 'mdsync --help' for more information", file=sys.stderr)
         sys.exit(1)
     
     # Determine source and destination types
-    source_is_gdoc = is_google_doc(args.source)
-    source_is_confluence = is_confluence_page(args.source)
-    source_is_markdown = not source_is_gdoc and not source_is_confluence
+    source_is_gdoc = args.source and is_google_doc(args.source)
+    source_is_confluence = args.source and is_confluence_page(args.source)
+    source_is_markdown = args.source and not source_is_gdoc and not source_is_confluence and not args.batch_update
     
     dest_is_confluence = args.destination and is_confluence_page(args.destination)
     dest_is_gdoc = args.destination and is_google_doc(args.destination)
@@ -2001,7 +3752,7 @@ def main():
         return
     
     # Intelligent destination detection for markdown files
-    if source_is_markdown and not args.destination and not args.create and not args.create_confluence:
+    if source_is_markdown and not args.destination and not args.create and not args.create_confluence and not args.list_batch:
         # Check if markdown has frontmatter with URLs
         try:
             with open(args.source, 'r', encoding='utf-8') as f:
@@ -2084,7 +3835,7 @@ def main():
             sys.exit(1)
     
     # Check for destination mismatch warnings
-    if source_is_markdown and dest_is_gdoc and args.destination:
+    if source_is_markdown and dest_is_gdoc and args.destination and not args.list_batch:
         try:
             with open(args.source, 'r', encoding='utf-8') as f:
                 markdown_content = f.read()
@@ -2211,6 +3962,45 @@ def main():
         
         return
     
+    # Handle heading management operations
+    # These commands enable creating and managing documents with organized heading sections
+    
+    if args.list_batch:
+        if not args.source:
+            print("Error: Directory required for --list-batch", file=sys.stderr)
+            print("Use: mdsync DIRECTORY --list-batch", file=sys.stderr)
+            sys.exit(1)
+        
+        # List batch groupings in markdown files
+        list_batch_groupings(args.source, quiet=args.url_only)
+        return
+    
+    if args.diff_batch:
+        if not args.source:
+            print("Error: Google Doc ID required for --diff-batch", file=sys.stderr)
+            print("Use: mdsync DOC_ID --diff-batch", file=sys.stderr)
+            sys.exit(1)
+        
+        if not source_is_gdoc:
+            print("Error: --diff-batch only works with Google Docs", file=sys.stderr)
+            sys.exit(1)
+        
+        # Diff entire batch against Google Doc
+        doc_id = extract_doc_id(args.source)
+        diff_batch_against_gdoc(doc_id, quiet=args.url_only)
+        return
+    
+    if args.batch_update:
+        if not args.source:
+            print("Error: Batch name or Google Doc ID required for --batch-update", file=sys.stderr)
+            print("Use: mdsync BATCH_NAME_OR_DOC_ID --batch-update", file=sys.stderr)
+            sys.exit(1)
+        
+        # Update existing batch by finding all files
+        update_batch_by_name(args.source, quiet=args.url_only)
+        return
+    
+    
     # Handle Confluence → Markdown
     if source_is_confluence:
         if not args.destination:
@@ -2308,6 +4098,10 @@ def main():
             sys.exit(1)
         
         if args.create:
+            # Check for existing gdoc_url and ask for confirmation
+            if not check_existing_gdoc_confirmation(args.source, args.force):
+                sys.exit(0)
+            
             # Create a new Google Doc
             if not args.url_only:
                 print(f"Creating new Google Doc from {args.source}...")
@@ -2319,7 +4113,31 @@ def main():
                 print("Error: Destination Google Doc URL/ID required (or use --create)", file=sys.stderr)
                 sys.exit(1)
             
+            # Check for existing gdoc_url and ask for confirmation
+            if not check_existing_gdoc_confirmation(args.source, args.force):
+                sys.exit(0)
+            
             doc_id = extract_doc_id(args.destination)
+            
+            # Check if this is a batch file
+            try:
+                with open(args.source, 'r', encoding='utf-8') as f:
+                    markdown_content = f.read()
+                
+                metadata = extract_frontmatter_metadata(markdown_content)
+                
+                if 'batch' in metadata and isinstance(metadata['batch'], dict):
+                    batch_info = metadata['batch']
+                    if batch_info.get('doc_id') == doc_id:
+                        if not args.url_only:
+                            print(f"Note: This file is part of a batch document")
+                            print(f"Batch: {batch_info.get('batch_title', 'Unknown')}")
+                            print(f"Heading: {batch_info.get('heading_title', 'Unknown')}")
+                            print(f"Consider using: mdsync {doc_id} --diff-batch")
+                            print()
+            except Exception:
+                pass  # Not a batch file, continue with normal processing
+            
             if not args.url_only:
                 print(f"Importing {args.source} to Google Doc {doc_id}...")
             

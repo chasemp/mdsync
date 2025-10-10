@@ -30,3 +30,10 @@
 - Test functionality after making changes
 - Verify that examples and documentation still work
 - Check for breaking changes before suggesting commits
+
+## Sync Operations
+- **NEVER sync to Confluence automatically** - Always ask the user before running any `mdsync` command that would sync to Confluence
+- **NEVER sync to Google Docs automatically** - Always ask the user before running any `mdsync` command that would sync to Google Docs
+- Only perform sync operations when explicitly requested by the user
+- Always explain what will be synced and where before proceeding
+- Use `--diff` flag to show changes before syncing when appropriate
