@@ -1479,6 +1479,16 @@ def export_gdoc_to_markdown(doc_id: str, creds, output_path: str = None) -> str:
         # Build the Drive service (used for export)
         drive_service = build('drive', 'v3', credentials=creds)
         
+        # Fetch document metadata (title, created/modified dates)
+        file_metadata = drive_service.files().get(
+            fileId=doc_id,
+            fields='name,createdTime,modifiedTime'
+        ).execute()
+        
+        doc_title = file_metadata.get('name', '')
+        created_time = file_metadata.get('createdTime', '')
+        modified_time = file_metadata.get('modifiedTime', '')
+        
         # Export the current version as Markdown
         # Google Docs now supports text/markdown as an export format
         request = drive_service.files().export_media(
@@ -1496,24 +1506,27 @@ def export_gdoc_to_markdown(doc_id: str, creds, output_path: str = None) -> str:
         # Get the content as string
         markdown_content = file_stream.getvalue().decode('utf-8')
         
-        # If output path provided, add frontmatter with gdoc_url
+        # If output path provided, add frontmatter with gdoc_url and metadata
         if output_path:
             gdoc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
             
             # Check if content already has frontmatter
             if markdown_content.startswith('---'):
-                # Parse existing frontmatter and add gdoc_url
+                # Parse existing frontmatter and add/update metadata
                 try:
                     import frontmatter
                     post = frontmatter.loads(markdown_content)
+                    post.metadata['title'] = doc_title
                     post.metadata['gdoc_url'] = gdoc_url
+                    post.metadata['gdoc_created'] = created_time
+                    post.metadata['gdoc_modified'] = modified_time
                     frontmatter_content = frontmatter.dumps(post)
                 except Exception:
                     # Fallback: prepend frontmatter
-                    frontmatter_content = f"---\ngdoc_url: {gdoc_url}\n---\n\n{markdown_content}"
+                    frontmatter_content = f"---\ntitle: {doc_title}\ngdoc_url: {gdoc_url}\ngdoc_created: {created_time}\ngdoc_modified: {modified_time}\n---\n\n{markdown_content}"
             else:
                 # Add frontmatter to the content
-                frontmatter_content = f"---\ngdoc_url: {gdoc_url}\n---\n\n{markdown_content}"
+                frontmatter_content = f"---\ntitle: {doc_title}\ngdoc_url: {gdoc_url}\ngdoc_created: {created_time}\ngdoc_modified: {modified_time}\n---\n\n{markdown_content}"
             
             # Write to file
             with open(output_path, 'w', encoding='utf-8') as f:
@@ -2118,13 +2131,14 @@ def display_frontmatter_info(results, check_status: bool = False):
                 print("   Export Locations: None")
 
 
-def check_existing_gdoc_confirmation(markdown_path: str, force: bool = False) -> bool:
+def check_existing_gdoc_confirmation(markdown_path: str, force: bool = False, destination_doc_id: str = None) -> bool:
     """
     Check if markdown file has existing gdoc_url and ask for confirmation if not forcing.
     
     Args:
         markdown_path (str): Path to markdown file
         force (bool): If True, skip confirmation
+        destination_doc_id (str): Optional destination document ID to compare with existing
         
     Returns:
         bool: True if should proceed, False if should skip
@@ -2137,9 +2151,21 @@ def check_existing_gdoc_confirmation(markdown_path: str, force: bool = False) ->
         existing_gdoc_url = metadata.get('gdoc_url')
         
         if existing_gdoc_url and not force:
+            # Extract doc ID from existing URL
+            existing_doc_id = extract_doc_id(existing_gdoc_url)
+            
+            # If destination_doc_id provided, check if it's the same document
+            if destination_doc_id and existing_doc_id == destination_doc_id:
+                # Same document, no warning needed - just updating content
+                return True
+            
+            # Different document or creating new - show warning
             print(f"\n⚠️  Warning: {os.path.basename(markdown_path)} already has a Google Doc link:")
             print(f"   {existing_gdoc_url}")
-            print(f"\nThis operation will update the link to point to a new document.")
+            if destination_doc_id:
+                print(f"\nThis operation will update the link to point to a different document.")
+            else:
+                print(f"\nThis operation will update the link to point to a new document.")
             
             try:
                 response = input("Do you want to continue? [y/N]: ").strip().lower()
@@ -3578,7 +3604,7 @@ def main():
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
                        default='text', metavar='FORMAT',
                        help='Output format: text, json, or markdown (default: text)')
-    parser.add_argument('--version', action='version', version='mdsync 0.2.1',
+    parser.add_argument('--version', action='version', version='mdsync 0.2.2',
                        help='Show version information and exit')
     
     # Handle list command (special case) - check before parsing main args
@@ -4111,7 +4137,7 @@ def main():
         
         if not args.url_only:
             print(f"Successfully exported to {args.destination}")
-            print(f"Added gdoc_url to frontmatter")
+            print(f"Added metadata to frontmatter: title, gdoc_url, gdoc_created, gdoc_modified")
         return
     
     # Handle Markdown → Confluence
@@ -4183,11 +4209,11 @@ def main():
                 print("Error: Destination Google Doc URL/ID required (or use --create)", file=sys.stderr)
                 sys.exit(1)
             
-            # Check for existing gdoc_url and ask for confirmation
-            if not check_existing_gdoc_confirmation(args.source, args.force):
-                sys.exit(0)
-            
             doc_id = extract_doc_id(args.destination)
+            
+            # Check for existing gdoc_url and ask for confirmation
+            if not check_existing_gdoc_confirmation(args.source, args.force, doc_id):
+                sys.exit(0)
             
             # Check if this is a batch file
             try:
