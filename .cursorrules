@@ -37,3 +37,16 @@
 - Only perform sync operations when explicitly requested by the user
 - Always explain what will be synced and where before proceeding
 - Use `--diff` flag to show changes before syncing when appropriate
+
+## Homebrew Integration
+- **Repository Relationship**: This mdsync repository is the source for the Homebrew formula in the separate `chasemp/homebrew-tap` repository
+- **Version Updates**: When updating the version in this repo, also update the Homebrew formula:
+  1. Update version in `mdsync.py` (--version argument)
+  2. Update version in `setup.py`
+  3. Commit and push changes to this repository
+  4. Get new SHA256 hash: `curl -sL https://github.com/chasemp/mdsync/archive/refs/heads/main.zip | shasum -a 256`
+  5. Update `/Users/cpettet/git/chasemp/homebrew-tap/Formula/mdsync.rb` with new version and SHA256
+  6. Commit and push changes to homebrew-tap repository
+- **Homebrew Formula Location**: `/Users/cpettet/git/chasemp/homebrew-tap/Formula/mdsync.rb`
+- **Installation Command**: `brew install chasemp/tap/mdsync`
+- **Testing**: After Homebrew updates, test with `brew install chasemp/tap/mdsync` and `mdsync --version`

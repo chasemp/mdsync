@@ -33,7 +33,7 @@ except ImportError:
 
 # If modifying these scopes, delete the file token.json.
 SCOPES = ['https://www.googleapis.com/auth/documents', 
-          'https://www.googleapis.com/auth/drive.file']
+          'https://www.googleapis.com/auth/drive']
 
 
 def find_config_file(filename: str) -> Optional[str]:
@@ -3578,7 +3578,7 @@ def main():
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
                        default='text', metavar='FORMAT',
                        help='Output format: text, json, or markdown (default: text)')
-    parser.add_argument('--version', action='version', version='mdsync 0.2.0',
+    parser.add_argument('--version', action='version', version='mdsync 0.2.1',
                        help='Show version information and exit')
     
     # Handle list command (special case) - check before parsing main args
