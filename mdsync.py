@@ -1902,7 +1902,59 @@ def create_new_gdoc_from_markdown(markdown_path: str, creds, quiet: bool = False
         sys.exit(1)
 
 
-def list_markdown_files(path: str, output_format: str = 'text', check_status: bool = False):
+def check_sync_status(markdown_path: str, destination_type: str, destination_id: str, creds=None, confluence=None) -> str:
+    """Check sync status between markdown and remote destination."""
+    try:
+        # Read markdown file
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            markdown_content = f.read()
+        
+        # Strip frontmatter for comparison
+        markdown_for_remote = strip_frontmatter_for_remote_sync(markdown_content)
+        
+        if destination_type == 'Google Doc':
+            if not creds:
+                return "❓ (no credentials)"
+            
+            # Check if frozen first
+            if check_gdoc_frozen_status(destination_id, creds):
+                return "🔒 (frozen)"
+            
+            # Export Google Doc to markdown for comparison
+            try:
+                gdoc_markdown = export_gdoc_to_markdown(destination_id, creds)
+                
+                # Compare content
+                if markdown_for_remote.strip() == gdoc_markdown.strip():
+                    return "✅ (synced)"
+                else:
+                    return "⚠️  (differs)"
+            except Exception as e:
+                return f"❌ (error: {str(e)[:30]}...)"
+        
+        elif destination_type == 'Confluence':
+            if not confluence:
+                return "❓ (no confluence client)"
+            
+            # Export Confluence to markdown for comparison
+            try:
+                confluence_markdown = export_confluence_to_markdown(destination_id, confluence)
+                
+                # Compare content
+                if markdown_for_remote.strip() == confluence_markdown.strip():
+                    return "✅ (synced)"
+                else:
+                    return "⚠️  (differs)"
+            except Exception as e:
+                return f"❌ (error: {str(e)[:30]}...)"
+        
+        return "❓ (unknown type)"
+        
+    except Exception as e:
+        return f"❌ (error: {str(e)[:30]}...)"
+
+
+def list_markdown_files(path: str, output_format: str = 'text', check_status: bool = False, show_diff: bool = False):
     """List frontmatter information for markdown files."""
     import glob
     import json
@@ -1968,6 +2020,12 @@ def list_markdown_files(path: str, output_format: str = 'text', check_status: bo
                         gdoc_info['frozen'] = is_frozen
                         gdoc_info['status'] = 'frozen' if is_frozen else 'available'
                 
+                if show_diff and creds:
+                    doc_id = extract_doc_id_from_url(metadata['gdoc_url'])
+                    if doc_id:
+                        sync_status = check_sync_status(file_path, 'Google Doc', doc_id, creds, confluence)
+                        gdoc_info['sync_status'] = sync_status
+                
                 export_locations.append(gdoc_info)
             
             # Check Confluence
@@ -1984,6 +2042,13 @@ def list_markdown_files(path: str, output_format: str = 'text', check_status: bo
                         is_frozen = check_confluence_frozen_status(page_id, confluence)
                         confluence_info['frozen'] = is_frozen
                         confluence_info['status'] = 'frozen' if is_frozen else 'available'
+                
+                if show_diff and confluence:
+                    dest_info = parse_confluence_destination(metadata['confluence_url'])
+                    page_id = dest_info.get('page_id')
+                    if page_id:
+                        sync_status = check_sync_status(file_path, 'Confluence', page_id, creds, confluence)
+                        confluence_info['sync_status'] = sync_status
                 
                 export_locations.append(confluence_info)
             
@@ -2027,10 +2092,10 @@ def list_markdown_files(path: str, output_format: str = 'text', check_status: bo
     if output_format == 'json':
         print(json.dumps(results, indent=2))
     else:
-        display_frontmatter_info(results, check_status)
+        display_frontmatter_info(results, check_status, show_diff)
 
 
-def display_frontmatter_info(results, check_status: bool = False):
+def display_frontmatter_info(results, check_status: bool = False, show_diff: bool = False):
     """Display frontmatter information in a readable format."""
     if not results:
         print("No markdown files with frontmatter found")
@@ -2126,7 +2191,11 @@ def display_frontmatter_info(results, check_status: bool = False):
                             status_icon = " ✅"
                             status_text = " (available)"
                     
-                    print(f"     • {location['type']}: {location['url']}{status_icon}{status_text}")
+                    if show_diff and 'sync_status' in location:
+                        sync_status = location['sync_status']
+                        print(f"     • {location['type']}: {location['url']} {sync_status}")
+                    else:
+                        print(f"     • {location['type']}: {location['url']}{status_icon}{status_text}")
             else:
                 print("   Export Locations: None")
 
@@ -3521,6 +3590,7 @@ def main():
                '  # List frontmatter\n'
                '  %(prog)s list [file_or_directory]\n'
                '  %(prog)s list --check-status  # Check live frozen status\n'
+               '  %(prog)s list --check-status --diff  # Check sync status summary\n'
                '  %(prog)s list --format json   # JSON output\n\n'
                '  # Diff (dry run)\n'
                '  %(prog)s file.md gdoc_url --diff\n'
@@ -3604,7 +3674,7 @@ def main():
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
                        default='text', metavar='FORMAT',
                        help='Output format: text, json, or markdown (default: text)')
-    parser.add_argument('--version', action='version', version='mdsync 0.2.2',
+    parser.add_argument('--version', action='version', version='mdsync 0.2.3',
                        help='Show version information and exit')
     
     # Handle list command (special case) - check before parsing main args
@@ -3621,10 +3691,12 @@ def main():
                                help='Output format: text or json (default: text)')
         list_parser.add_argument('--check-status', action='store_true',
                                help='Check live frozen status of destinations (requires credentials)')
+        list_parser.add_argument('--diff', action='store_true',
+                               help='Show sync status summary for each destination (markdown vs remote)')
         
         try:
             list_args_parsed = list_parser.parse_args(list_args)
-            list_markdown_files(list_args_parsed.path, list_args_parsed.format, list_args_parsed.check_status)
+            list_markdown_files(list_args_parsed.path, list_args_parsed.format, list_args_parsed.check_status, list_args_parsed.diff)
             return
         except SystemExit:
             return
