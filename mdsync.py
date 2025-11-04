@@ -402,22 +402,21 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
     
     # Update anchor links to match Confluence's generated anchors
     def fix_anchor_link(match):
-        href = match.group(1)
+        # Regex already extracted the anchor name (without #) from href="#anchor"
+        anchor_name = match.group(1)  # This is already without the #
         text = match.group(2)
         
-        if href.startswith('#'):
-            anchor_name = href[1:]
-            # Try to find the matching Confluence anchor
-            # First check if we have a mapping for this anchor
-            if anchor_name in anchor_to_heading_map:
-                confluence_anchor = anchor_to_heading_map[anchor_name]
-            else:
-                # Generate anchor from the link text (fallback)
-                confluence_anchor = generate_confluence_anchor(text)
-            return f'<a href="#{confluence_anchor}">{text}</a>'
-        return match.group(0)
+        # Try to find the matching Confluence anchor
+        # First check if we have a mapping for this anchor
+        if anchor_name in anchor_to_heading_map:
+            confluence_anchor = anchor_to_heading_map[anchor_name]
+        else:
+            # Generate anchor from the link text (fallback)
+            confluence_anchor = generate_confluence_anchor(text)
+        return f'<a href="#{confluence_anchor}">{text}</a>'
     
     # Fix anchor links before the general link conversion
+    # This regex matches <a href="#anchor">text</a> and extracts anchor (without #) and text
     confluence_content = re.sub(
         r'<a href="#([^"]+)">(.*?)</a>',
         fix_anchor_link,
