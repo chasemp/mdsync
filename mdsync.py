@@ -1009,12 +1009,23 @@ def lock_confluence_page(page_id: str, confluence_url: str, username: str, api_t
         
         # Get default permissions from config if not provided
         if not allowed_editors:
-            perms_config = get_confluence_permissions_config(secrets_file_path)
-            if perms_config and 'allowed_editors' in perms_config:
-                allowed_editors = perms_config['allowed_editors']
+            # First check environment variable for allowed editor groups
+            env_groups = os.getenv('MDSYNC_ALLOWED_EDITORS_GROUPS')
+            env_users = os.getenv('MDSYNC_ALLOWED_EDITORS_USERS')
+            
+            if env_groups or env_users:
+                # Parse comma-separated values
+                groups = [g.strip() for g in env_groups.split(',')] if env_groups else []
+                users = [u.strip() for u in env_users.split(',')] if env_users else []
+                allowed_editors = {'users': users, 'groups': groups}
             else:
-                # Fallback: only current user
-                allowed_editors = {'users': [username], 'groups': []}
+                # Fallback to secrets.yaml if available
+                perms_config = get_confluence_permissions_config(secrets_file_path)
+                if perms_config and 'allowed_editors' in perms_config:
+                    allowed_editors = perms_config['allowed_editors']
+                else:
+                    # Final fallback: only current user
+                    allowed_editors = {'users': [username], 'groups': []}
         
         # Always include current user to prevent lockout
         editor_users = list(allowed_editors.get('users', []))
