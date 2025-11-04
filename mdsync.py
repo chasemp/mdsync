@@ -2126,9 +2126,10 @@ def list_markdown_files(path: str, output_format: str = 'text', check_status: bo
     # Get credentials if status checking is enabled
     creds = None
     confluence = None
+    secrets_file_path = args.secrets_file if hasattr(args, 'secrets_file') and args.secrets_file else None
     if check_status:
         creds = get_credentials()
-        confluence = get_confluence_client(args.secrets_file if hasattr(args, 'secrets_file') else None)
+        confluence = get_confluence_client(secrets_file_path)
     
     results = []
     
