@@ -323,9 +323,99 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
     # Convert to Confluence Storage Format
     confluence_content = html_content
     
-    # Preserve id attributes on headings - Confluence needs them for anchor links
-    # Convert explicit id attributes to Confluence's anchor format
-    # Confluence uses the id attribute directly for anchor links
+    # Generate Confluence-compatible anchor IDs from heading text
+    # Confluence auto-generates anchors from heading text, so we need to match that format
+    def generate_confluence_anchor(heading_text):
+        """Generate a Confluence-compatible anchor ID from heading text.
+        
+        Confluence generates anchors by:
+        1. Preserving original case (NOT lowercasing)
+        2. Replacing spaces with hyphens
+        3. URL encoding special characters (:, [, ], etc.)
+        """
+        import urllib.parse
+        # Confluence preserves case and uses URL encoding
+        anchor = heading_text.strip()
+        # Remove markdown formatting but preserve the text structure
+        anchor = re.sub(r'\*\*([^*]+)\*\*', r'\1', anchor)  # Remove bold
+        anchor = re.sub(r'\*([^*]+)\*', r'\1', anchor)  # Remove italic
+        anchor = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', anchor)  # Remove links
+        # Unescape escaped brackets (from markdown like \[IN PROGRESS\])
+        anchor = re.sub(r'\\\[', '[', anchor)  # Match \ followed by [
+        anchor = re.sub(r'\\\]', ']', anchor)  # Match \ followed by ]
+        # Replace spaces with hyphens (but keep case)
+        anchor = re.sub(r'\s+', '-', anchor)
+        # URL encode (Confluence uses URL encoding for anchors)
+        # Don't encode hyphens, they're part of the anchor format
+        return urllib.parse.quote(anchor, safe='-')
+    
+    # Update heading IDs to match Confluence's auto-generated format
+    def fix_heading_anchor(match):
+        heading_tag = match.group(1)
+        heading_text = match.group(2)
+        existing_id = match.group(3) if match.group(3) else None
+        
+        # Generate anchor from heading text (Confluence's way)
+        anchor_id = generate_confluence_anchor(heading_text)
+        
+        # If there's an explicit id, try to use it, but Confluence will generate from text
+        # So we'll generate from text to match Confluence's behavior
+        return f'<h{heading_tag} id="{anchor_id}">{heading_text}</h{heading_tag}>'
+    
+    # Update headings to have Confluence-compatible anchor IDs
+    confluence_content = re.sub(
+        r'<h([1-6])(?:\s+id="([^"]*)")?>(.*?)</h\1>',
+        fix_heading_anchor,
+        confluence_content
+    )
+    
+    # Map of markdown anchor names to Confluence anchors (for TOC links)
+    # We'll build this by scanning the markdown content before conversion
+    anchor_to_heading_map = {}
+    heading_pattern = r'^#{1,6}\s+(.+?)(?:\s+\{#([^}]+)\})?$'
+    for line in markdown_content.split('\n'):
+        match = re.match(heading_pattern, line)
+        if match:
+            heading_text = match.group(1).strip()
+            # Remove markdown link syntax from heading text for anchor generation
+            clean_heading = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', heading_text)  # Remove links
+            clean_heading = re.sub(r'\\\[([^\]]+)\\\]', r'[\1]', clean_heading)  # Unescape brackets
+            
+            # Generate anchor from heading text (Confluence's way - based on actual heading text)
+            confluence_anchor = generate_confluence_anchor(clean_heading)
+            
+            # Map explicit anchor (if present) to the Confluence-generated anchor
+            explicit_anchor = match.group(2) if match.group(2) else None
+            if explicit_anchor:
+                anchor_to_heading_map[explicit_anchor] = confluence_anchor
+            
+            # Also map variations of the heading text to the anchor
+            anchor_to_heading_map[clean_heading.lower()] = confluence_anchor
+            anchor_to_heading_map[heading_text.lower()] = confluence_anchor
+    
+    # Update anchor links to match Confluence's generated anchors
+    def fix_anchor_link(match):
+        href = match.group(1)
+        text = match.group(2)
+        
+        if href.startswith('#'):
+            anchor_name = href[1:]
+            # Try to find the matching Confluence anchor
+            # First check if we have a mapping for this anchor
+            if anchor_name in anchor_to_heading_map:
+                confluence_anchor = anchor_to_heading_map[anchor_name]
+            else:
+                # Generate anchor from the link text (fallback)
+                confluence_anchor = generate_confluence_anchor(text)
+            return f'<a href="#{confluence_anchor}">{text}</a>'
+        return match.group(0)
+    
+    # Fix anchor links before the general link conversion
+    confluence_content = re.sub(
+        r'<a href="#([^"]+)">(.*?)</a>',
+        fix_anchor_link,
+        confluence_content
+    )
     
     # Convert code blocks to simpler format (remove codehilite divs)
     confluence_content = re.sub(
@@ -3677,7 +3767,7 @@ def main():
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
                        default='text', metavar='FORMAT',
                        help='Output format: text, json, or markdown (default: text)')
-    parser.add_argument('--version', action='version', version='mdsync 0.2.3',
+    parser.add_argument('--version', action='version', version='mdsync 0.2.4',
                        help='Show version information and exit')
     
     # Handle list command (special case) - check before parsing main args
