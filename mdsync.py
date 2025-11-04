@@ -3992,7 +3992,8 @@ def main():
     creds = None
     confluence = None
     
-    if source_is_gdoc or dest_is_gdoc or args.create or args.lock or args.unlock or args.lock_status or args.list_revisions or args.list_comments or args.diff or source_is_markdown:
+    # Only get Google credentials when actually needed (for Google Doc operations)
+    if source_is_gdoc or dest_is_gdoc or args.create or args.lock or args.unlock or args.lock_status or args.list_revisions or args.list_comments or (args.diff and (source_is_gdoc or dest_is_gdoc)):
         creds = get_credentials()
     
     if source_is_confluence or dest_is_confluence or args.create_confluence or args.diff or source_is_markdown:
