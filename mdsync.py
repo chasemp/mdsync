@@ -323,12 +323,9 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
     # Convert to Confluence Storage Format
     confluence_content = html_content
     
-    # Remove problematic id attributes from headings
-    confluence_content = re.sub(
-        r'<h([1-6]) id="[^"]*">',
-        r'<h\1>',
-        confluence_content
-    )
+    # Preserve id attributes on headings - Confluence needs them for anchor links
+    # Convert explicit id attributes to Confluence's anchor format
+    # Confluence uses the id attribute directly for anchor links
     
     # Convert code blocks to simpler format (remove codehilite divs)
     confluence_content = re.sub(
@@ -399,13 +396,19 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
         flags=re.DOTALL
     )
     
-    # Convert links - distinguish between internal pages and external URLs
+    # Convert links - distinguish between anchor links, external URLs, and internal pages
     def convert_link(match):
         href = match.group(1)
         text = match.group(2)
         
+        # Anchor link (starts with #) - same page anchor
+        if href.startswith('#'):
+            anchor_name = href[1:]  # Remove the #
+            # For same-page anchors, use Confluence anchor format
+            # Note: Confluence will auto-generate anchors from headings, but we preserve explicit ones
+            return f'<a href="#{anchor_name}">{text}</a>'
         # External URL (starts with http/https)
-        if href.startswith(('http://', 'https://', 'mailto:')):
+        elif href.startswith(('http://', 'https://', 'mailto:')):
             return f'<a href="{href}">{text}</a>'
         # Internal page link - convert to Confluence format
         else:
