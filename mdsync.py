@@ -362,12 +362,15 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
         if heading_text is None:
             return match.group(0)  # Return original if something's wrong
         
-        # Generate anchor from heading text (Confluence's way)
-        anchor_id = generate_confluence_anchor(heading_text)
+        # Remove markdown anchor syntax {#anchor} from heading text if present
+        # This is formatting noise from Google Docs that shouldn't be displayed
+        clean_heading_text = re.sub(r'\s*\{#[^}]+\}\s*$', '', heading_text).strip()
         
-        # If there's an explicit id, try to use it, but Confluence will generate from text
-        # So we'll generate from text to match Confluence's behavior
-        return f'<h{heading_tag} id="{anchor_id}">{heading_text}</h{heading_tag}>'
+        # Generate anchor from CLEAN heading text (without the {#...} part)
+        anchor_id = generate_confluence_anchor(clean_heading_text)
+        
+        # Use the clean heading text for display
+        return f'<h{heading_tag} id="{anchor_id}">{clean_heading_text}</h{heading_tag}>'
     
     # Update headings to have Confluence-compatible anchor IDs
     confluence_content = re.sub(
@@ -384,15 +387,20 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
         match = re.match(heading_pattern, line)
         if match:
             heading_text = match.group(1).strip()
+            explicit_anchor = match.group(2) if match.group(2) else None
+            
+            # Remove markdown anchor syntax {#anchor} from heading text if present
+            # This is formatting noise that shouldn't be part of the anchor generation
+            clean_heading = re.sub(r'\s*\{#[^}]+\}\s*$', '', heading_text).strip()
+            
             # Remove markdown link syntax from heading text for anchor generation
-            clean_heading = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', heading_text)  # Remove links
+            clean_heading = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', clean_heading)  # Remove links
             clean_heading = re.sub(r'\\\[([^\]]+)\\\]', r'[\1]', clean_heading)  # Unescape brackets
             
-            # Generate anchor from heading text (Confluence's way - based on actual heading text)
+            # Generate anchor from CLEAN heading text (Confluence's way - without the {#...} part)
             confluence_anchor = generate_confluence_anchor(clean_heading)
             
             # Map explicit anchor (if present) to the Confluence-generated anchor
-            explicit_anchor = match.group(2) if match.group(2) else None
             if explicit_anchor:
                 anchor_to_heading_map[explicit_anchor] = confluence_anchor
             
