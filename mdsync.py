@@ -334,6 +334,9 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
         3. URL encoding special characters (:, [, ], etc.)
         """
         import urllib.parse
+        # Handle None case
+        if heading_text is None:
+            return ''
         # Confluence preserves case and uses URL encoding
         anchor = heading_text.strip()
         # Remove markdown formatting but preserve the text structure
@@ -352,8 +355,12 @@ def markdown_to_confluence_storage(markdown_content: str) -> str:
     # Update heading IDs to match Confluence's auto-generated format
     def fix_heading_anchor(match):
         heading_tag = match.group(1)
-        heading_text = match.group(2)
-        existing_id = match.group(3) if match.group(3) else None
+        existing_id = match.group(2) if match.group(2) else None
+        heading_text = match.group(3)  # The actual heading text content
+        
+        # Handle None case (shouldn't happen, but be safe)
+        if heading_text is None:
+            return match.group(0)  # Return original if something's wrong
         
         # Generate anchor from heading text (Confluence's way)
         anchor_id = generate_confluence_anchor(heading_text)
