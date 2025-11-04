@@ -996,7 +996,7 @@ def get_confluence_permissions_config(secrets_file_path: Optional[str] = None):
 
 
 def lock_confluence_page(page_id: str, confluence_url: str, username: str, api_token: str, 
-                        allowed_editors: dict = None) -> bool:
+                        allowed_editors: dict = None, secrets_file_path: Optional[str] = None) -> bool:
     """Lock a Confluence page by setting edit restrictions.
     
     Similar to md2confluence's _apply_page_permissions.
