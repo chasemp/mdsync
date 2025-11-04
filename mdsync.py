@@ -4225,7 +4225,7 @@ def main():
             print("Error: Could not extract Confluence page ID", file=sys.stderr)
             sys.exit(1)
         
-        confluence_creds = get_confluence_credentials()
+        confluence_creds = get_confluence_credentials(secrets_file_path)
         if not confluence_creds:
             print("Error: Confluence credentials not found", file=sys.stderr)
             sys.exit(1)
@@ -4236,7 +4236,8 @@ def main():
                 page_id,
                 confluence_creds['url'],
                 confluence_creds['username'],
-                confluence_creds['api_token']
+                confluence_creds['api_token'],
+                secrets_file_path=secrets_file_path
             )
             if success:
                 print(f"✓ Page locked successfully")
