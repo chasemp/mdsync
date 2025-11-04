@@ -3825,7 +3825,7 @@ def main():
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
                        default='text', metavar='FORMAT',
                        help='Output format: text, json, or markdown (default: text)')
-    parser.add_argument('--version', action='version', version='mdsync 0.2.4',
+    parser.add_argument('--version', action='version', version='mdsync 0.2.9',
                        help='Show version information and exit')
     
     # Handle list command (special case) - check before parsing main args
@@ -3853,6 +3853,9 @@ def main():
             return
     
     args = parser.parse_args()
+    
+    # Extract secrets_file_path early for use throughout main()
+    secrets_file_path = args.secrets_file if hasattr(args, 'secrets_file') and args.secrets_file else None
     
     # Handle --create-empty command (must be before type detection)
     if args.create_empty:
