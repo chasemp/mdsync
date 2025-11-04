@@ -166,20 +166,30 @@ def parse_confluence_destination(dest: str) -> dict:
     return result
 
 
-def get_confluence_credentials():
-    """Get Confluence credentials as a dict (for direct API calls)."""
+def get_confluence_credentials(secrets_file_path: Optional[str] = None):
+    """Get Confluence credentials as a dict (for direct API calls).
+    
+    Args:
+        secrets_file_path: Optional explicit path to secrets.yaml file
+    """
     # Look for Confluence credentials in multiple locations
     confluence_url = os.getenv('CONFLUENCE_URL')
     confluence_username = os.getenv('CONFLUENCE_USERNAME')
     confluence_token = os.getenv('CONFLUENCE_API_TOKEN') or os.getenv('CONFLUENCE_TOKEN')
     
     # Try secrets.yaml first (preferred method)
-    secrets_paths = [
-        Path.cwd() / 'secrets.yaml',
-        Path.cwd() / 'secrets.yml',
-        Path.home() / '.config' / 'mdsync' / 'secrets.yaml',
-        Path.home() / '.mdsync' / 'secrets.yaml',
-    ]
+    secrets_paths = []
+    if secrets_file_path:
+        # Explicit path provided
+        secrets_paths = [Path(secrets_file_path)]
+    else:
+        # Default search paths
+        secrets_paths = [
+            Path.cwd() / 'secrets.yaml',
+            Path.cwd() / 'secrets.yml',
+            Path.home() / '.config' / 'mdsync' / 'secrets.yaml',
+            Path.home() / '.mdsync' / 'secrets.yaml',
+        ]
     
     for secrets_path in secrets_paths:
         if secrets_path.exists():
@@ -225,8 +235,12 @@ def get_confluence_credentials():
     }
 
 
-def get_confluence_client():
-    """Get Confluence API client from secrets.yaml, environment variables, or config."""
+def get_confluence_client(secrets_file_path: Optional[str] = None):
+    """Get Confluence API client from secrets.yaml, environment variables, or config.
+    
+    Args:
+        secrets_file_path: Optional explicit path to secrets.yaml file
+    """
     if not CONFLUENCE_AVAILABLE:
         print("Error: Confluence support not available. Install with: pip install atlassian-python-api", file=sys.stderr)
         sys.exit(1)
@@ -237,12 +251,18 @@ def get_confluence_client():
     confluence_token = os.getenv('CONFLUENCE_API_TOKEN') or os.getenv('CONFLUENCE_TOKEN')
     
     # Try secrets.yaml first (preferred method)
-    secrets_paths = [
-        Path.cwd() / 'secrets.yaml',
-        Path.cwd() / 'secrets.yml',
-        Path.home() / '.config' / 'mdsync' / 'secrets.yaml',
-        Path.home() / '.mdsync' / 'secrets.yaml',
-    ]
+    secrets_paths = []
+    if secrets_file_path:
+        # Explicit path provided
+        secrets_paths = [Path(secrets_file_path)]
+    else:
+        # Default search paths
+        secrets_paths = [
+            Path.cwd() / 'secrets.yaml',
+            Path.cwd() / 'secrets.yml',
+            Path.home() / '.config' / 'mdsync' / 'secrets.yaml',
+            Path.home() / '.mdsync' / 'secrets.yaml',
+        ]
     
     for secrets_path in secrets_paths:
         if secrets_path.exists():
@@ -941,14 +961,24 @@ def extract_doc_id_from_url(url: str) -> str:
     return None
 
 
-def get_confluence_permissions_config():
-    """Get default permissions configuration from secrets.yaml."""
-    secrets_paths = [
-        Path.cwd() / 'secrets.yaml',
-        Path.cwd() / 'secrets.yml',
-        Path.home() / '.config' / 'mdsync' / 'secrets.yaml',
-        Path.home() / '.mdsync' / 'secrets.yaml',
-    ]
+def get_confluence_permissions_config(secrets_file_path: Optional[str] = None):
+    """Get default permissions configuration from secrets.yaml.
+    
+    Args:
+        secrets_file_path: Optional explicit path to secrets.yaml file
+    """
+    secrets_paths = []
+    if secrets_file_path:
+        # Explicit path provided
+        secrets_paths = [Path(secrets_file_path)]
+    else:
+        # Default search paths
+        secrets_paths = [
+            Path.cwd() / 'secrets.yaml',
+            Path.cwd() / 'secrets.yml',
+            Path.home() / '.config' / 'mdsync' / 'secrets.yaml',
+            Path.home() / '.mdsync' / 'secrets.yaml',
+        ]
     
     for secrets_path in secrets_paths:
         if secrets_path.exists():
@@ -979,7 +1009,7 @@ def lock_confluence_page(page_id: str, confluence_url: str, username: str, api_t
         
         # Get default permissions from config if not provided
         if not allowed_editors:
-            perms_config = get_confluence_permissions_config()
+            perms_config = get_confluence_permissions_config(secrets_file_path)
             if perms_config and 'allowed_editors' in perms_config:
                 allowed_editors = perms_config['allowed_editors']
             else:
@@ -2098,7 +2128,7 @@ def list_markdown_files(path: str, output_format: str = 'text', check_status: bo
     confluence = None
     if check_status:
         creds = get_credentials()
-        confluence = get_confluence_client()
+        confluence = get_confluence_client(args.secrets_file if hasattr(args, 'secrets_file') else None)
     
     results = []
     
@@ -3750,6 +3780,8 @@ def main():
                        help='Parent page ID for new Confluence page')
     parser.add_argument('--labels', type=str, metavar='LABELS',
                        help='Comma-separated labels for Confluence page (combined with frontmatter labels)')
+    parser.add_argument('--secrets-file', type=str, metavar='PATH',
+                       help='Path to secrets.yaml file (default: searches in current dir, ~/.config/mdsync/, ~/.mdsync/)')
     
     # Heading management options
     parser.add_argument('--create-empty', action='store_true',
@@ -3997,7 +4029,7 @@ def main():
         creds = get_credentials()
     
     if source_is_confluence or dest_is_confluence or args.create_confluence or args.diff or source_is_markdown:
-        confluence = get_confluence_client()
+        confluence = get_confluence_client(args.secrets_file if hasattr(args, 'secrets_file') else None)
     
     # Handle diff operations (dry run) - must be before intelligent destination detection
     if args.diff:
