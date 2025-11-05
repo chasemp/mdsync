@@ -2102,7 +2102,7 @@ def check_sync_status(markdown_path: str, destination_type: str, destination_id:
         return f"❌ (error: {str(e)[:30]}...)"
 
 
-def list_markdown_files(path: str, output_format: str = 'text', check_status: bool = False, show_diff: bool = False):
+def list_markdown_files(path: str, output_format: str = 'text', check_status: bool = False, show_diff: bool = False, secrets_file_path: Optional[str] = None):
     """List frontmatter information for markdown files."""
     import glob
     import json
@@ -2137,7 +2137,6 @@ def list_markdown_files(path: str, output_format: str = 'text', check_status: bo
     # Get credentials if status checking is enabled
     creds = None
     confluence = None
-    secrets_file_path = args.secrets_file if hasattr(args, 'secrets_file') and args.secrets_file else None
     if check_status:
         creds = get_credentials()
         confluence = get_confluence_client(secrets_file_path)
@@ -3847,7 +3846,8 @@ def main():
         
         try:
             list_args_parsed = list_parser.parse_args(list_args)
-            list_markdown_files(list_args_parsed.path, list_args_parsed.format, list_args_parsed.check_status, list_args_parsed.diff)
+            secrets_file_path = list_args_parsed.secrets_file if hasattr(list_args_parsed, 'secrets_file') and list_args_parsed.secrets_file else None
+            list_markdown_files(list_args_parsed.path, list_args_parsed.format, list_args_parsed.check_status, list_args_parsed.diff, secrets_file_path)
             return
         except SystemExit:
             return
