@@ -3843,6 +3843,8 @@ def main():
                                help='Check live frozen status of destinations (requires credentials)')
         list_parser.add_argument('--diff', action='store_true',
                                help='Show sync status summary for each destination (markdown vs remote)')
+        list_parser.add_argument('--secrets-file', type=str, metavar='PATH',
+                               help='Path to secrets.yaml file (default: searches in current dir, ~/.config/mdsync/, ~/.mdsync/)')
         
         try:
             list_args_parsed = list_parser.parse_args(list_args)
