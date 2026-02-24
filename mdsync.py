@@ -3735,6 +3735,9 @@ def main():
                '  %(prog)s input.md --create-confluence --space ENG --title "My Page"\n'
                '  %(prog)s confluence:SPACE/123456 output.md\n'
                '  %(prog)s https://site.atlassian.net/wiki/spaces/ENG/pages/123456 output.md\n\n'
+               '  # Push/pull (uses frontmatter URLs)\n'
+               '  %(prog)s push file.md  # Push local → remote\n'
+               '  %(prog)s pull file.md  # Pull remote → local\n\n'
                '  # List frontmatter\n'
                '  %(prog)s list [file_or_directory]\n'
                '  %(prog)s list --check-status  # Check live frozen status\n'
@@ -3824,7 +3827,7 @@ def main():
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
                        default='text', metavar='FORMAT',
                        help='Output format: text, json, or markdown (default: text)')
-    parser.add_argument('--version', action='version', version='mdsync 0.2.9',
+    parser.add_argument('--version', action='version', version='mdsync 0.3.0',
                        help='Show version information and exit')
     
     # Handle list command (special case) - check before parsing main args
@@ -3853,7 +3856,157 @@ def main():
             return
         except SystemExit:
             return
-    
+
+    # Handle push command (local markdown → remote)
+    if len(sys.argv) > 1 and sys.argv[1] == 'push':
+        push_pull_args = sys.argv[2:]
+        pp_parser = argparse.ArgumentParser(prog='mdsync push')
+        pp_parser.add_argument('file', help='Markdown file to push')
+        pp_parser.add_argument('--secrets-file', type=str, metavar='PATH',
+                               help='Path to secrets.yaml file')
+        try:
+            pp = pp_parser.parse_args(push_pull_args)
+        except SystemExit:
+            return
+
+        markdown_path = pp.file
+        secrets_file_path = pp.secrets_file if pp.secrets_file else None
+
+        try:
+            with open(markdown_path, 'r', encoding='utf-8') as f:
+                markdown_content = f.read()
+        except FileNotFoundError:
+            print(f"Error: File not found: {markdown_path}", file=sys.stderr)
+            sys.exit(1)
+
+        fm = extract_frontmatter_metadata(markdown_content)
+        gdoc_url = fm.get('gdoc_url')
+        confluence_url = fm.get('confluence_url')
+
+        if not gdoc_url and not confluence_url:
+            print("Error: No remote URL found in frontmatter (gdoc_url or confluence_url required)", file=sys.stderr)
+            sys.exit(1)
+
+        # Determine which destinations to push to
+        destinations = []
+        if gdoc_url:
+            destinations.append(('gdoc', gdoc_url))
+        if confluence_url:
+            destinations.append(('confluence', confluence_url))
+
+        if len(destinations) > 1:
+            print("Multiple destinations found in frontmatter:")
+            for i, (platform, url) in enumerate(destinations, 1):
+                print(f"  {i}. {platform.title()}: {url}")
+            try:
+                choice = input("Choose destination (1-{}): ".format(len(destinations)))
+                choice_idx = int(choice) - 1
+                if 0 <= choice_idx < len(destinations):
+                    destinations = [destinations[choice_idx]]
+                else:
+                    print("Invalid choice", file=sys.stderr)
+                    sys.exit(1)
+            except (ValueError, KeyboardInterrupt):
+                print("Cancelled", file=sys.stderr)
+                sys.exit(1)
+
+        for platform, url in destinations:
+            if platform == 'gdoc':
+                doc_id = extract_doc_id_from_url(url) or extract_doc_id(url)
+                if not doc_id:
+                    print(f"Error: Could not extract Google Doc ID from: {url}", file=sys.stderr)
+                    sys.exit(1)
+                creds = get_credentials()
+                print(f"Pushing {markdown_path} to Google Doc...")
+                import_markdown_to_gdoc(markdown_path, doc_id, creds)
+                print(f"Done. {url}")
+            elif platform == 'confluence':
+                parsed = parse_confluence_destination(url)
+                page_id = parsed.get('page_id')
+                if not page_id:
+                    print(f"Error: Could not extract Confluence page ID from: {url}", file=sys.stderr)
+                    sys.exit(1)
+                confluence = get_confluence_client(secrets_file_path)
+                print(f"Pushing {markdown_path} to Confluence page {page_id}...")
+                import_markdown_to_confluence(markdown_path, page_id, confluence)
+                print(f"Done. {url}")
+        return
+
+    # Handle pull command (remote → local markdown)
+    if len(sys.argv) > 1 and sys.argv[1] == 'pull':
+        push_pull_args = sys.argv[2:]
+        pp_parser = argparse.ArgumentParser(prog='mdsync pull')
+        pp_parser.add_argument('file', help='Markdown file to pull into (reads remote URL from frontmatter)')
+        pp_parser.add_argument('--secrets-file', type=str, metavar='PATH',
+                               help='Path to secrets.yaml file')
+        try:
+            pp = pp_parser.parse_args(push_pull_args)
+        except SystemExit:
+            return
+
+        markdown_path = pp.file
+        secrets_file_path = pp.secrets_file if pp.secrets_file else None
+
+        try:
+            with open(markdown_path, 'r', encoding='utf-8') as f:
+                markdown_content = f.read()
+        except FileNotFoundError:
+            print(f"Error: File not found: {markdown_path}", file=sys.stderr)
+            sys.exit(1)
+
+        fm = extract_frontmatter_metadata(markdown_content)
+        gdoc_url = fm.get('gdoc_url')
+        confluence_url = fm.get('confluence_url')
+
+        if not gdoc_url and not confluence_url:
+            print("Error: No remote URL found in frontmatter (gdoc_url or confluence_url required)", file=sys.stderr)
+            sys.exit(1)
+
+        # Determine which source to pull from
+        sources = []
+        if gdoc_url:
+            sources.append(('gdoc', gdoc_url))
+        if confluence_url:
+            sources.append(('confluence', confluence_url))
+
+        if len(sources) > 1:
+            print("Multiple sources found in frontmatter:")
+            for i, (platform, url) in enumerate(sources, 1):
+                print(f"  {i}. {platform.title()}: {url}")
+            try:
+                choice = input("Choose source to pull from (1-{}): ".format(len(sources)))
+                choice_idx = int(choice) - 1
+                if 0 <= choice_idx < len(sources):
+                    sources = [sources[choice_idx]]
+                else:
+                    print("Invalid choice", file=sys.stderr)
+                    sys.exit(1)
+            except (ValueError, KeyboardInterrupt):
+                print("Cancelled", file=sys.stderr)
+                sys.exit(1)
+
+        for platform, url in sources:
+            if platform == 'gdoc':
+                doc_id = extract_doc_id_from_url(url) or extract_doc_id(url)
+                if not doc_id:
+                    print(f"Error: Could not extract Google Doc ID from: {url}", file=sys.stderr)
+                    sys.exit(1)
+                creds = get_credentials()
+                print(f"Pulling from Google Doc into {markdown_path}...")
+                export_gdoc_to_markdown(doc_id, creds, markdown_path)
+                print(f"Done.")
+            elif platform == 'confluence':
+                parsed = parse_confluence_destination(url)
+                page_id = parsed.get('page_id')
+                if not page_id:
+                    print(f"Error: Could not extract Confluence page ID from: {url}", file=sys.stderr)
+                    sys.exit(1)
+                confluence = get_confluence_client(secrets_file_path)
+                print(f"Pulling from Confluence page {page_id} into {markdown_path}...")
+                export_confluence_to_markdown(page_id, confluence, markdown_path)
+                print(f"Done.")
+        return
+
     args = parser.parse_args()
     
     # Extract secrets_file_path early for use throughout main()
