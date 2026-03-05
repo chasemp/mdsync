@@ -3827,7 +3827,7 @@ def main():
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
                        default='text', metavar='FORMAT',
                        help='Output format: text, json, or markdown (default: text)')
-    parser.add_argument('--version', action='version', version='mdsync 0.3.0',
+    parser.add_argument('--version', action='version', version='mdsync 0.3.1',
                        help='Show version information and exit')
     
     # Handle list command (special case) - check before parsing main args
@@ -4310,6 +4310,12 @@ def main():
             print(f"Error: Markdown file not found: {args.source}", file=sys.stderr)
             sys.exit(1)
     
+    # Late credential initialization for auto-detected destinations
+    if dest_is_gdoc and creds is None:
+        creds = get_credentials()
+    if dest_is_confluence and confluence is None:
+        confluence = get_confluence_client(args.secrets_file if hasattr(args, 'secrets_file') else None)
+
     # Check for destination mismatch warnings
     if source_is_markdown and dest_is_gdoc and args.destination and not args.list_batch:
         try:
