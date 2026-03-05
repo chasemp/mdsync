@@ -3827,7 +3827,7 @@ def main():
     parser.add_argument('--format', type=str, choices=['text', 'json', 'markdown'],
                        default='text', metavar='FORMAT',
                        help='Output format: text, json, or markdown (default: text)')
-    parser.add_argument('--version', action='version', version='mdsync 0.3.1',
+    parser.add_argument('--version', action='version', version='mdsync 0.3.2',
                        help='Show version information and exit')
     
     # Handle list command (special case) - check before parsing main args
@@ -4198,7 +4198,7 @@ def main():
     if source_is_gdoc or dest_is_gdoc or args.create or args.lock or args.unlock or args.lock_status or args.list_revisions or args.list_comments or (args.diff and (source_is_gdoc or dest_is_gdoc)):
         creds = get_credentials()
     
-    if source_is_confluence or dest_is_confluence or args.create_confluence or args.diff or source_is_markdown:
+    if source_is_confluence or dest_is_confluence or args.create_confluence or (args.diff and (source_is_confluence or dest_is_confluence)):
         confluence = get_confluence_client(args.secrets_file if hasattr(args, 'secrets_file') else None)
     
     # Handle diff operations (dry run) - must be before intelligent destination detection
